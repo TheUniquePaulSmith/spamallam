@@ -56,6 +56,10 @@
      through the full analysis pipeline (including enabled tools) and shows the
      complete technical exchange.</p>
   <button id="test-btn" class="primary">Run test</button>
-  <pre id="test-output" class="log" hidden></pre>
+  <div id="test-result" hidden>
+    <div id="test-summary"></div>
+    <p><button type="button" id="test-toggle-raw" class="small">Show raw JSON</button></p>
+    <pre id="test-output" class="log" hidden></pre>
+  </div>
 </div>
 {% endblock %}
