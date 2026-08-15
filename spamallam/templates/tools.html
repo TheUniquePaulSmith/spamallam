@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Tools{% endblock %}
+{% block content %}
+<h1>Tool calling</h1>
+<p class="muted">Capabilities the AI may invoke while analyzing a message. Both web tools
+share a hard guardrail: URLs found inside the analyzed message are <strong>never</strong>
+fetched (activation-link protection).</p>
+<form method="post" action="/settings/tools" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+
+  <h2>ip_lookup</h2>
+  <label class="row"><input type="checkbox" name="ip_lookup_enabled"
+    {{ 'checked' if cfg.tools.ip_lookup.enabled }}><span>GeoIP + reverse-DNS lookup of sender IPs</span></label>
+  <label class="row"><input type="checkbox" name="ip_lookup_non_us"
+    {{ 'checked' if cfg.tools.ip_lookup.non_us_note }}><span>Advise the model to weigh non-US origin spam-ward</span></label>
+
+  <h2>domain_age</h2>
+  <label class="row"><input type="checkbox" name="domain_age_enabled"
+    {{ 'checked' if cfg.tools.domain_age.enabled }}><span>RDAP/WHOIS registration-age lookups</span></label>
+  <label>Flag domains younger than (days)
+    <input type="number" name="young_domain_days" value="{{ cfg.tools.domain_age.young_domain_days }}"></label>
+
+  <h2>dns_verify</h2>
+  <label class="row"><input type="checkbox" name="dns_verify_enabled"
+    {{ 'checked' if cfg.tools.dns_verify.enabled }}><span>MX/SPF/DMARC + brand-impersonation alignment checks</span></label>
+
+  <h2>web_search</h2>
+  <label class="row"><input type="checkbox" name="web_search_enabled"
+    {{ 'checked' if cfg.tools.web_search.enabled }}><span>Web search to validate senders/brands</span></label>
+  <label>Backend
+    <select name="web_search_backend">
+      <option value="brave" {{ 'selected' if cfg.tools.web_search.backend == 'brave' }}>Brave Search API</option>
+      <option value="searxng" {{ 'selected' if cfg.tools.web_search.backend == 'searxng' }}>SearXNG</option>
+      <option value="custom" {{ 'selected' if cfg.tools.web_search.backend == 'custom' }}>Custom endpoint</option>
+    </select></label>
+  <label>Endpoint <span class="muted">(searxng/custom)</span>
+    <input name="web_search_endpoint" value="{{ cfg.tools.web_search.endpoint }}"></label>
+  <label>API key <span class="muted">(stored encrypted; current: {{ tools.web_search.api_key or 'not set' }})</span>
+    <input type="password" name="web_search_api_key" autocomplete="off"></label>
+
+  <h2>web_fetch</h2>
+  <label class="row"><input type="checkbox" name="web_fetch_enabled"
+    {{ 'checked' if cfg.tools.web_fetch.enabled }}><span>Fetch pages found via search / known brand domains</span></label>
+  <label>Backend
+    <select name="web_fetch_backend">
+      <option value="curl" {{ 'selected' if cfg.tools.web_fetch.backend == 'curl' }}>curl (default)</option>
+      <option value="playwright" {{ 'selected' if cfg.tools.web_fetch.backend == 'playwright' }}>Playwright (headless Chromium)</option>
+      <option value="lightpanda" {{ 'selected' if cfg.tools.web_fetch.backend == 'lightpanda' }}>Lightpanda (CDP endpoint)</option>
+    </select></label>
+  <label>CDP endpoint <span class="muted">(lightpanda / remote browser, e.g. ws://lightpanda:9222)</span>
+    <input name="web_fetch_endpoint" value="{{ cfg.tools.web_fetch.endpoint }}"></label>
+
+  <h2>shared_provider_check</h2>
+  <label class="row"><input type="checkbox" name="shared_provider_enabled"
+    {{ 'checked' if cfg.tools.shared_provider_check.enabled }}>
+    <span>Detect shared bulk-mail providers (SendGrid/SES/Mailchimp/ACS…) and
+    legitimate-infrastructure masquerading</span></label>
+
+  <h2>unifi_block</h2>
+  <label class="row"><input type="checkbox" name="unifi_enabled"
+    {{ 'checked' if cfg.tools.unifi_block.enabled }}>
+    <span>UniFi network blocking of confirmed-malicious SMTP sources</span></label>
+  <label class="row"><input type="radio" name="unifi_policy" value="suggest"
+    {{ 'checked' if cfg.tools.unifi_block.policy != 'auto' }}>
+    <span><strong>Suggest only</strong> (default) — record recommendations for admin review, push nothing</span></label>
+  <label class="row"><input type="radio" name="unifi_policy" value="auto"
+    {{ 'checked' if cfg.tools.unifi_block.policy == 'auto' }}>
+    <span><strong>Auto</strong> — push blocks to the UniFi Network List (shared-provider IPs always refused)</span></label>
+  <div class="cols">
+    <label>UniFi URL <input name="unifi_url" value="{{ cfg.tools.unifi_block.url }}"
+      placeholder="https://192.168.1.1"></label>
+    <label>Site <input name="unifi_site" value="{{ cfg.tools.unifi_block.site }}"></label>
+  </div>
+  <div class="cols">
+    <label>Network List name <input name="unifi_network_list" value="{{ cfg.tools.unifi_block.network_list }}"></label>
+    <label>Max rollup prefix (/16–/32) <input type="number" name="unifi_max_prefix" min="16" max="32"
+      value="{{ cfg.tools.unifi_block.max_prefix }}"></label>
+  </div>
+  <label>API key <span class="muted">(stored encrypted; current: {{ tools.unifi_block.api_key or 'not set' }})</span>
+    <input type="password" name="unifi_api_key" autocomplete="off"></label>
+
+  {% if is_admin %}<button class="primary">Save all tools</button>{% endif %}
+</form>
+{% endblock %}

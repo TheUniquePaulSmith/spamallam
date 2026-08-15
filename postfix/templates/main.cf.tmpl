@@ -1,0 +1,109 @@
+# ============================================================================
+# SpamAllam hardened postfix — INBOUND-ONLY relay gateway
+# Rendered from main.cf.tmpl by entrypoint.sh. Do not edit inside container.
+# ============================================================================
+
+compatibility_level = 3.6
+maillog_file = /dev/stdout
+biff = no
+
+# ---- Identity --------------------------------------------------------------
+myhostname = ${MAIL_HOSTNAME}
+mydomain = ${MAIL_DOMAIN}
+myorigin = $myhostname
+smtpd_banner = $myhostname ESMTP
+
+# ---- This host delivers NO local mail; it only relays for MAIL_DOMAINS -----
+mydestination =
+local_recipient_maps =
+local_transport = error:5.1.1 local delivery disabled on this gateway
+alias_maps =
+alias_database =
+relay_domains = ${MAIL_DOMAINS_SPACED}
+relayhost = [${MAILSERVER_HOST}]:${MAILSERVER_PORT}
+recipient_delimiter = +
+
+# Only this stack's docker subnet + loopback are ever trusted.
+mynetworks = 127.0.0.0/8 [::1]/128 ${DOCKER_SUBNET}
+
+# ---- Message limits / anti-abuse -------------------------------------------
+message_size_limit = ${MESSAGE_SIZE_LIMIT}
+mailbox_size_limit = 0
+smtpd_helo_required = yes
+strict_rfc821_envelopes = yes
+disable_vrfy_command = yes
+smtpd_delay_reject = yes
+smtpd_junk_command_limit = ${JUNK_COMMAND_LIMIT}
+smtpd_error_sleep_time = 5s
+smtpd_soft_error_limit = 5
+smtpd_hard_error_limit = 10
+smtpd_client_connection_count_limit = ${SMTPD_CLIENT_CONNECTION_COUNT_LIMIT}
+smtpd_client_connection_rate_limit = ${SMTPD_CLIENT_CONNECTION_RATE_LIMIT}
+anvil_rate_time_unit = 60s
+
+# ---- Restrictions (NO OPEN RELAY) ------------------------------------------
+smtpd_client_restrictions =
+    permit_mynetworks,
+    reject_unauth_pipelining
+
+smtpd_helo_restrictions =
+    permit_mynetworks,
+    reject_invalid_helo_hostname,
+    reject_non_fqdn_helo_hostname,
+    reject_unknown_helo_hostname
+
+smtpd_sender_restrictions =
+    permit_mynetworks,
+    reject_non_fqdn_sender,
+    reject_unknown_sender_domain
+
+smtpd_relay_restrictions =
+    permit_mynetworks,
+    reject_unauth_destination
+
+smtpd_recipient_restrictions =
+    permit_mynetworks,
+    reject_non_fqdn_recipient,
+    reject_unknown_recipient_domain,
+    reject_unauth_destination${RECIPIENT_VALIDATION_EXTRA}
+
+smtpd_data_restrictions =
+    reject_unauth_pipelining,
+    reject_multi_recipient_bounce
+
+${RELAY_RECIPIENT_MAPS_LINE}
+
+# Dynamic recipient verification (only active in RECIPIENT_VALIDATION=verify)
+address_verify_map = btree:$data_directory/verify_cache
+unverified_recipient_reject_code = 550
+address_verify_sender = <>
+
+# ---- postscreen (pre-greeting bot/zombie filtering) ------------------------
+postscreen_access_list = permit_mynetworks
+postscreen_greet_action = enforce
+postscreen_dnsbl_sites = ${POSTSCREEN_DNSBL_SITES}
+postscreen_dnsbl_threshold = ${POSTSCREEN_DNSBL_THRESHOLD}
+postscreen_dnsbl_action = enforce
+postscreen_blacklist_action = drop
+
+# ---- TLS (server side, inbound) --------------------------------------------
+smtpd_tls_chain_files = ${TLS_KEY_FILE} ${TLS_CERT_FILE}
+smtpd_tls_security_level = may
+smtpd_tls_protocols = >=TLSv1.2
+smtpd_tls_mandatory_protocols = >=TLSv1.2
+smtpd_tls_mandatory_ciphers = high
+tls_preempt_cipherlist = yes
+smtpd_tls_received_header = yes
+smtpd_tls_session_cache_database = btree:$data_directory/smtpd_tlscache
+smtpd_tls_loglevel = 1
+
+# ---- TLS (client side, to the internal mail server) ------------------------
+smtp_tls_security_level = may
+smtp_tls_loglevel = 1
+
+# ---- Anti-backscatter ------------------------------------------------------
+# Unknown recipients are rejected at SMTP time (see restrictions above); keep
+# bounce lifetime short so this gateway never becomes a backscatter source.
+bounce_queue_lifetime = 1h
+maximal_queue_lifetime = 1d
+notify_classes =

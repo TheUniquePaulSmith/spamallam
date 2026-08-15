@@ -1,0 +1,12 @@
+# Antivirus scanning: ClamAV (local container) + optional VirusTotal hash lookups.
+clamav {
+  type = "clamav";
+  servers = "clamav:3310";
+  symbol = "CLAM_VIRUS";
+  action = "reject";
+  log_clean = true;
+  patterns {
+    CLAM_UNOFFICIAL = "UNOFFICIAL$";
+  }
+}
+${VT_BLOCK}

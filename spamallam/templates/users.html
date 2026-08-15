@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Users{% endblock %}
+{% block content %}
+<h1>Users & passkeys</h1>
+
+{% if invite_token %}
+<div class="card ok-border">
+  <h2>Invite created</h2>
+  <p>Send this single-use enrollment link (valid 24 h) to the new user:</p>
+  <pre class="log">https://{{ admin_host }}:{{ admin_port }}/setup?token={{ invite_token }}</pre>
+  <p class="warn">Shown once — it is stored only as a hash.</p>
+</div>
+{% endif %}
+
+{% for uname, u in users.items() %}
+<div class="card">
+  <h2>{{ uname }} {% if u.is_admin %}<span class="badge">admin</span>{% endif %}
+      <span class="muted small">{{ u.display }} · created {{ u.created }}</span></h2>
+  <table>
+    <tr><th>passkey</th><th>added</th><th>id</th><th></th></tr>
+    {% for c in u.credentials %}
+    <tr>
+      <td>{{ c.label }}</td>
+      <td>{{ c.added }}</td>
+      <td class="mono small">{{ c.id[:20] }}…</td>
+      <td>
+        {% if uname == username %}
+        <form method="post" action="/users/passkey/delete" class="inline-form">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="cred_id" value="{{ c.id }}">
+          <button class="danger">remove</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% else %}<tr><td colspan="4" class="muted">no passkeys (user cannot sign in)</td></tr>{% endfor %}
+  </table>
+  {% if uname == username %}
+  <label>New passkey label <input id="passkey-label" placeholder="e.g. backup YubiKey"></label>
+  <button id="add-passkey-btn">Add passkey to my account</button>
+  <p id="passkey-error" class="error" hidden></p>
+  {% elif is_admin %}
+  <form method="post" action="/users/delete" class="inline-form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="target" value="{{ uname }}">
+    <button class="danger">delete user</button>
+  </form>
+  {% endif %}
+</div>
+{% endfor %}
+
+{% if is_admin %}
+<form method="post" action="/users/invite" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <h2>Invite a user</h2>
+  <div class="cols">
+    <label>Username <input name="new_username" required pattern="[a-zA-Z0-9._-]+"></label>
+    <label class="row"><input type="checkbox" name="is_admin"><span>Grant admin</span></label>
+  </div>
+  <button class="primary">Create enrollment link</button>
+</form>
+{% endif %}
+{% endblock %}

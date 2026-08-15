@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}LLM provider{% endblock %}
+{% block content %}
+<h1>LLM provider</h1>
+<form method="post" action="/settings/provider" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label>Provider
+    <select name="ptype" id="ptype">
+      <option value="openai" {{ 'selected' if provider.type == 'openai' }}>OpenAI</option>
+      <option value="anthropic" {{ 'selected' if provider.type == 'anthropic' }}>Claude (Anthropic)</option>
+      <option value="custom" {{ 'selected' if provider.type == 'custom' }}>Custom provider (OpenAI-compatible)</option>
+    </select></label>
+  <label>Model <input name="model" value="{{ provider.model }}" required
+      placeholder="gpt-4o-mini / claude-sonnet-5 / llama3.1:70b"></label>
+  <label>Base URL <span class="muted">(custom provider only, e.g. http://ai-node.lan:11434/v1)</span>
+    <input name="base_url" value="{{ provider.base_url }}"></label>
+  <label>API key <span class="muted">(stored encrypted; leave blank to keep current:
+      {{ provider.api_key or 'not set' }})</span>
+    <input name="api_key" type="password" autocomplete="off"></label>
+  <div class="cols">
+    <label>Timeout (s) <input name="timeout_seconds" type="number" value="{{ provider.timeout_seconds }}"></label>
+    <label>Max tokens <input name="max_tokens" type="number" value="{{ provider.max_tokens }}"></label>
+  </div>
+  {% if is_admin %}<button class="primary">Save</button>{% endif %}
+</form>
+
+<form method="post" action="/settings/provider/mtls" enctype="multipart/form-data" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <h2>mTLS client certificate <span class="muted">(custom provider, optional)</span></h2>
+  <p class="muted">Present a client certificate when connecting to the custom provider.
+     The PFX file and its password are stored encrypted at rest; the decrypted key
+     exists only in memory during provider calls and is never shown again.</p>
+  <label class="row"><input type="checkbox" name="enabled"
+      {{ 'checked' if cfg.provider.mtls.enabled }}> <span>Enable mTLS</span></label>
+  <label>PFX / PKCS#12 file <span class="muted">(current: {{ provider.mtls.pfx or 'not set' }})</span>
+    <input type="file" name="pfx" accept=".pfx,.p12"></label>
+  <label>PFX password <span class="muted">(current: {{ provider.mtls.pfx_password or 'not set' }})</span>
+    <input type="password" name="pfx_password" autocomplete="off"></label>
+  <label class="row"><input type="checkbox" name="clear"> <span>Remove stored certificate + password</span></label>
+  {% if is_admin %}<button class="primary">Save mTLS settings</button>{% endif %}
+</form>
+
+<div class="card">
+  <h2>Test provider</h2>
+  <p class="muted">Checks connectivity, then runs a built-in sample phishing e-mail
+     through the full analysis pipeline (including enabled tools) and shows the
+     complete technical exchange.</p>
+  <button id="test-btn" class="primary">Run test</button>
+  <pre id="test-output" class="log" hidden></pre>
+</div>
+{% endblock %}

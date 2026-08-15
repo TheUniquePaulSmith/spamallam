@@ -1,0 +1,10 @@
+# Container files must keep LF endings even on Windows checkouts —
+# CRLF in an entrypoint breaks the container ("/bin/sh^M: not found").
+*.sh    text eol=lf
+*.tmpl  text eol=lf
+*.conf  text eol=lf
+*.inc   text eol=lf
+*.lua   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+Dockerfile text eol=lf

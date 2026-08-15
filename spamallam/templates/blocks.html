@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Network blocks{% endblock %}
+{% block content %}
+<h1>Network block suggestions & actions</h1>
+<p class="muted">Every unifi_block tool invocation lands here — suggested, executed or
+refused. In "suggest" policy, add the CIDR to your UniFi Network List manually after
+review.</p>
+<table class="card">
+  <tr><th>time</th><th>ip</th><th>cidr</th><th>rDNS</th><th>status</th><th>reason</th></tr>
+  {% for s in suggestions %}
+  <tr>
+    <td class="mono">{{ s.ts }}</td>
+    <td class="mono">{{ s.ip }}</td>
+    <td class="mono">{{ s.cidr }}</td>
+    <td>{{ s.reverse_dns or '—' }}</td>
+    <td class="{{ 'ok' if s.status == 'blocked' else 'warn' }}">{{ s.status }}</td>
+    <td>{{ s.reason }}</td>
+  </tr>
+  {% else %}<tr><td colspan="6" class="muted">No block activity yet.</td></tr>{% endfor %}
+</table>
+{% endblock %}

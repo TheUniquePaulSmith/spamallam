@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Mail context{% endblock %}
+{% block content %}
+<h1>Expected-mail context</h1>
+<p class="muted">This optional context is injected into every AI analysis. It teaches the
+model what is normal for your organization — so expected bulk mail isn't flagged, truly
+irrelevant offers (timeshares, power-washing…) are confidently rejected, and polished
+mail that doesn't fit your workflows stands out as spear-phishing.</p>
+
+<form method="post" action="/settings/context" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label>Tell me about your organization / business
+    <textarea name="organization" rows="5"
+      placeholder="e.g. Fractal Engine is a one-person software consultancy in the US. We never deal in crypto, gambling or real estate.">{{ cfg.context.organization }}</textarea></label>
+  <label>Tell me about the type of mail you expect to receive
+    <textarea name="expected_mail" rows="5"
+      placeholder="e.g. GitHub/Synology/UniFi notifications, invoices from Hetzner, tech newsletters (LWN, TLDR), family mail from gmail.com.">{{ cfg.context.expected_mail }}</textarea></label>
+  {% if is_admin %}<button class="primary">Save</button>{% endif %}
+</form>
+
+<div class="card">
+  <h2>Per-recipient context <span class="muted">(optional)</span></h2>
+  {% for email, text in cfg.context.per_recipient.items() %}
+  <form method="post" action="/settings/context/recipient" class="inline-form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="email" value="{{ email }}">
+    <strong>{{ email }}</strong>
+    <textarea name="text" rows="2">{{ text }}</textarea>
+    {% if is_admin %}
+      <button>Update</button>
+      <button name="delete" value="on" class="danger">Delete</button>
+    {% endif %}
+  </form>
+  {% else %}<p class="muted">No per-recipient entries yet.</p>{% endfor %}
+  {% if is_admin %}
+  <form method="post" action="/settings/context/recipient" class="inline-form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input name="email" type="email" placeholder="paul@fractalengine.com" required>
+    <textarea name="text" rows="2"
+      placeholder="e.g. subscribed to opensea.io and coindesk newsletters — crypto mail TO THIS ADDRESS may be legitimate"></textarea>
+    <button class="primary">Add recipient context</button>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}
