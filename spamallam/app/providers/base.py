@@ -73,6 +73,11 @@ class BaseProvider(abc.ABC):
     async def ping(self) -> dict[str, Any]:
         """Cheap connectivity check; raises on failure, returns details on success."""
 
+    async def list_models(self) -> list[str]:
+        """Model IDs available to this provider/key, for the admin UI's model
+        picker. Raises on failure (surfaced to the admin as-is)."""
+        raise NotImplementedError(f"{self.settings.type} provider cannot list models")
+
     # ---- shared tool-calling loop ------------------------------------------
     async def run(
         self,

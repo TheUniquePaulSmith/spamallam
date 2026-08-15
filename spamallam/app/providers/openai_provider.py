@@ -84,14 +84,17 @@ class OpenAIProvider(BaseProvider):
             messages.append({"role": "tool", "tool_call_id": call.id, "content": result_json})
 
     async def ping(self) -> dict[str, Any]:
+        models = await self.list_models()
+        visible = models[:25]
+        return {
+            "endpoint": f"{self.base_url}/models",
+            "models_visible": visible,
+            "configured_model_listed": self.settings.model in models if models else None,
+        }
+
+    async def list_models(self) -> list[str]:
         async with self._client() as client:
             resp = await client.get(f"{self.base_url}/models")
             resp.raise_for_status()
             data = resp.json()
-        models = [m.get("id") for m in data.get("data", [])][:25]
-        return {
-            "endpoint": f"{self.base_url}/models",
-            "status": resp.status_code,
-            "models_visible": models,
-            "configured_model_listed": self.settings.model in models if models else None,
-        }
+        return sorted({m.get("id") for m in data.get("data", []) if m.get("id")})

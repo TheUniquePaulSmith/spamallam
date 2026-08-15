@@ -146,9 +146,9 @@ def bootstrap() -> None:
         banner = "=" * 72
         log.warning(
             "\n%s\nNo users enrolled. One-time admin enrollment token (24h validity):\n\n"
-            "    https://%s:%d/setup?token=%s\n\n"
+            "    %s\n\n"
             "Open the URL and register your first passkey. There are no passwords.\n%s",
-            banner, ENV.admin_external_host, ENV.admin_port, token, banner,
+            banner, ENV.admin_external_url(f"/setup?token={token}"), banner,
         )
 
 

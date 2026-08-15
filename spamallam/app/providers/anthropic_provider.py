@@ -97,3 +97,10 @@ class AnthropicProvider(BaseProvider):
             "model": data.get("model"),
             "usage": data.get("usage", {}),
         }
+
+    async def list_models(self) -> list[str]:
+        async with self._client() as client:
+            resp = await client.get(f"{self.base_url}/models", params={"limit": 100})
+            resp.raise_for_status()
+            data = resp.json()
+        return sorted({m.get("id") for m in data.get("data", []) if m.get("id")})

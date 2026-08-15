@@ -7,7 +7,7 @@
 <div class="card ok-border">
   <h2>Invite created</h2>
   <p>Send this single-use enrollment link (valid 24 h) to the new user:</p>
-  <pre class="log">https://{{ admin_host }}:{{ admin_port }}/setup?token={{ invite_token }}</pre>
+  <pre class="log">{{ invite_url }}</pre>
   <p class="warn">Shown once — it is stored only as a hash.</p>
 </div>
 {% endif %}

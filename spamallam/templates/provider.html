@@ -10,13 +10,18 @@
       <option value="anthropic" {{ 'selected' if provider.type == 'anthropic' }}>Claude (Anthropic)</option>
       <option value="custom" {{ 'selected' if provider.type == 'custom' }}>Custom provider (OpenAI-compatible)</option>
     </select></label>
-  <label>Model <input name="model" value="{{ provider.model }}" required
-      placeholder="gpt-4o-mini / claude-sonnet-5 / llama3.1:70b"></label>
+  <label>Model <input name="model" id="model-input" value="{{ provider.model }}" required
+      list="model-list" placeholder="gpt-4o-mini / claude-sonnet-5 / llama3.1:70b"></label>
+  <datalist id="model-list"></datalist>
+  <div class="row">
+    <button type="button" id="fetch-models-btn">Fetch available models</button>
+    <span id="fetch-models-status" class="muted small"></span>
+  </div>
   <label>Base URL <span class="muted">(custom provider only, e.g. http://ai-node.lan:11434/v1)</span>
-    <input name="base_url" value="{{ provider.base_url }}"></label>
+    <input name="base_url" id="base-url-input" value="{{ provider.base_url }}"></label>
   <label>API key <span class="muted">(stored encrypted; leave blank to keep current:
-      {{ provider.api_key or 'not set' }})</span>
-    <input name="api_key" type="password" autocomplete="off"></label>
+      {{ provider.api_key or 'not set' }}; also used for "Fetch available models" above)</span>
+    <input name="api_key" id="api-key-input" type="password" autocomplete="off"></label>
   <div class="cols">
     <label>Timeout (s) <input name="timeout_seconds" type="number" value="{{ provider.timeout_seconds }}"></label>
     <label>Max tokens <input name="max_tokens" type="number" value="{{ provider.max_tokens }}"></label>

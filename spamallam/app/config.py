@@ -42,6 +42,13 @@ class Env:
     admin_external_host: str = field(
         default_factory=lambda: _env("ADMIN_EXTERNAL_HOST") or _env("MAIL_HOSTNAME", "localhost")
     )
+    # The container always listens on admin_port internally; the host may publish
+    # that under a different port (docker-compose ADMIN_BIND). Links shown to
+    # users (setup/invite URLs) need the port reachable from outside, not the
+    # container-internal one — set this to match whatever ADMIN_BIND uses.
+    admin_external_port: int = field(
+        default_factory=lambda: int(_env("ADMIN_EXTERNAL_PORT") or _env("ADMIN_PORT", "8443"))
+    )
     tls_cert_name: str = field(
         default_factory=lambda: _env("TLS_CERT_NAME")
         or _env("ADMIN_EXTERNAL_HOST", "").split(":")[0]
@@ -66,6 +73,12 @@ class Env:
     geoip_db_path: str = field(
         default_factory=lambda: _env("GEOIP_DB_PATH", "/data/geoip/GeoLite2-City.mmdb")
     )
+
+
+    def admin_external_url(self, path: str = "") -> str:
+        """Build a browser-facing admin UI URL, omitting :443 (the HTTPS default)."""
+        port = "" if self.admin_external_port == 443 else f":{self.admin_external_port}"
+        return f"https://{self.admin_external_host}{port}{path}"
 
 
 ENV = Env()

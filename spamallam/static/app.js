@@ -70,6 +70,36 @@ if (addPasskeyBtn) {
   });
 }
 
+/* ---- provider: fetch available models ---- */
+const fetchModelsBtn = document.getElementById("fetch-models-btn");
+if (fetchModelsBtn) {
+  fetchModelsBtn.addEventListener("click", async () => {
+    const status = document.getElementById("fetch-models-status");
+    const datalist = document.getElementById("model-list");
+    const ptype = document.getElementById("ptype").value;
+    const base_url = document.getElementById("base-url-input").value;
+    const api_key = document.getElementById("api-key-input").value;
+    status.textContent = "Fetching…";
+    fetchModelsBtn.disabled = true;
+    try {
+      const { models } = await postJSON("/api/provider/models", { ptype, base_url, api_key });
+      datalist.innerHTML = "";
+      for (const m of models) {
+        const opt = document.createElement("option");
+        opt.value = m;
+        datalist.appendChild(opt);
+      }
+      status.textContent = models.length
+        ? `${models.length} models found — pick from the Model field's suggestions`
+        : "Provider returned no models";
+    } catch (err) {
+      status.textContent = "Fetch failed: " + (err.message || err);
+    } finally {
+      fetchModelsBtn.disabled = false;
+    }
+  });
+}
+
 /* ---- provider test ---- */
 const testBtn = document.getElementById("test-btn");
 if (testBtn) {
@@ -85,6 +115,38 @@ if (testBtn) {
       out.textContent = "Test failed: " + (err.message || err);
     } finally {
       testBtn.disabled = false;
+    }
+  });
+}
+
+/* ---- test message (full pipeline: overrides -> AI -> rspamd) ---- */
+const testMessageBtn = document.getElementById("test-message-btn");
+if (testMessageBtn) {
+  testMessageBtn.addEventListener("click", async () => {
+    const form = document.getElementById("test-message-form");
+    const out = document.getElementById("test-message-output");
+    const summary = document.getElementById("test-message-summary");
+    out.hidden = false;
+    out.textContent = "Running message through the pipeline (AI + rspamd)…";
+    summary.hidden = true;
+    testMessageBtn.disabled = true;
+    try {
+      const resp = await fetch("/api/test/message", { method: "POST", body: new FormData(form) });
+      const result = await resp.json();
+      if (!resp.ok) throw new Error(result.detail || `HTTP ${resp.status}`);
+      out.textContent = JSON.stringify(result, null, 2);
+      const v = result.verdict || {};
+      document.getElementById("tm-action").textContent = (result.action || "").toUpperCase();
+      document.getElementById("tm-reason").textContent = result.reason || "(none)";
+      document.getElementById("tm-ai-verdict").textContent =
+        `${v.ai_verdict || "?"} (${Math.round((v.ai_confidence || 0) * 100)}% confidence) — ${v.ai_reason || ""}`;
+      document.getElementById("tm-rspamd-action").textContent = v.rspamd_action || "";
+      document.getElementById("tm-rspamd-score").textContent = v.rspamd_score;
+      summary.hidden = false;
+    } catch (err) {
+      out.textContent = "Test failed: " + (err.message || err);
+    } finally {
+      testMessageBtn.disabled = false;
     }
   });
 }

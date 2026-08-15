@@ -50,8 +50,10 @@ class Pipeline:
         envelope_from: str,
         rcpt_tos: list[str],
         client: dict[str, Any],
-    ) -> tuple[Decision, MessageTrace]:
-        trace = MessageTrace(envelope_from, rcpt_tos, client)
+        trace: Any = None,
+    ) -> tuple[Decision, Any]:
+        if trace is None:
+            trace = MessageTrace(envelope_from, rcpt_tos, client)
         cfg = SETTINGS.all()
 
         # 1. Anti-spoofing: remove any inbound spam-analysis headers
@@ -183,3 +185,37 @@ class Pipeline:
 
 
 PIPELINE = Pipeline()
+
+
+class _TestRecorder:
+    """In-memory stand-in for MessageTrace, for the admin UI message-test page:
+    same .event()/.finish() interface, but never persisted to the trace log."""
+
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+        self.action = ""
+        self.verdict: dict[str, Any] = {}
+
+    def event(self, kind: str, **fields: Any) -> None:
+        self.events.append({"kind": kind, **fields})
+
+    def finish(self, action: str, verdict: dict[str, Any] | None = None) -> None:
+        self.action = action
+        self.verdict = verdict or {}
+
+
+async def process_test(
+    raw: bytes, envelope_from: str, rcpt_tos: list[str], client: dict[str, Any]
+) -> dict[str, Any]:
+    """Run a message through the full live pipeline (overrides -> AI -> rspamd ->
+    combined decision) for the admin UI's message-test page, without writing a
+    trace log entry. Uses the real configured provider/tools, so tool side
+    effects (e.g. UniFi auto-block) still apply exactly as they would for mail."""
+    recorder = _TestRecorder()
+    decision, _ = await PIPELINE.process(raw, envelope_from, rcpt_tos, client, trace=recorder)
+    return {
+        "action": decision.action,
+        "reason": decision.reason,
+        "verdict": recorder.verdict,
+        "events": recorder.events,
+    }
