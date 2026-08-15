@@ -153,21 +153,33 @@ def create_app() -> FastAPI:
     # ------------------------------------------------------------ settings: AI
     @app.get("/settings/ai", response_class=HTMLResponse)
     async def ai_page(request: Request):
+        from ..ai.prompt import system_prompt
+
         username = security.require_user(request)
-        return render(request, "ai.html", username, cfg=SETTINGS.all())
+        cfg = SETTINGS.all()
+        return render(request, "ai.html", username, cfg=cfg,
+                      effective_prompt=system_prompt(cfg["ai"]),
+                      prompt_customized=bool((cfg["ai"].get("system_prompt") or "").strip()))
 
     @app.post("/settings/ai")
     async def ai_save(request: Request, csrf: str = Form(...),
                       enabled: str = Form("off"), failure_mode: str = Form("fail_open"),
-                      drop_threshold: float = Form(0.95)):
+                      drop_threshold: float = Form(0.95), system_prompt: str = Form("")):
+        from ..ai.prompt import DEFAULT_SYSTEM_PROMPT
+
         username = security.require_admin(request)
         security.check_csrf(username, csrf)
         if failure_mode not in ("fail_open", "tempfail"):
             raise HTTPException(status_code=400, detail="bad failure_mode")
+        # Normalize: an empty box or unchanged default is stored as "" (use built-in)
+        prompt_text = system_prompt.replace("\r\n", "\n").strip()
+        if prompt_text == DEFAULT_SYSTEM_PROMPT.strip():
+            prompt_text = ""
         changes = SETTINGS.update({
             "ai.enabled": enabled == "on",
             "ai.failure_mode": failure_mode,
             "ai.drop_threshold": max(0.5, min(1.0, drop_threshold)),
+            "ai.system_prompt": prompt_text,
         })
         audit.record_changes(username, changes)
         return RedirectResponse("/settings/ai", status_code=303)

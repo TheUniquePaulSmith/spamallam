@@ -10,7 +10,7 @@ from ..pipeline.headers import SpamallamVerdict
 from ..providers.factory import load_provider
 from ..store.secrets import SecretsBox
 from ..store.settings import SETTINGS
-from .prompt import SAMPLE_EMAIL, SYSTEM_PROMPT, build_user_message
+from .prompt import SAMPLE_EMAIL, build_user_message, system_prompt
 from .summarize import summarize
 
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
@@ -59,7 +59,7 @@ async def analyze_message(
         return await registry.execute(name, arguments, cfg, box, summary)
 
     text = await provider.run(
-        SYSTEM_PROMPT,
+        system_prompt(cfg["ai"]),
         user,
         tools,
         execute_tool,
