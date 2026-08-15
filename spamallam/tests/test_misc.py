@@ -51,3 +51,53 @@ def test_cidr_rollup_capped():
     # requested /8 but capped at /24
     assert rollup("203.0.113.77", 8, 24) == "203.0.113.0/24"
     assert rollup("203.0.113.77", 32, 24) == "203.0.113.77/32"
+
+
+# ---- RIR / RDAP ownership parsing ------------------------------------------
+
+ARIN_RDAP = {
+    "handle": "NET-167-89-0-0-1",
+    "name": "SENDGRID",
+    "country": "US",
+    "cidr0_cidrs": [{"v4prefix": "167.89.0.0", "length": 17}],
+    "entities": [
+        {"roles": ["registrant"],
+         "vcardArray": ["vcard", [["version", {}, "text", "4.0"],
+                                  ["fn", {}, "text", "SendGrid, Inc."]]]},
+    ],
+}
+
+RIPE_RDAP = {
+    "handle": "185.220.100.0 - 185.220.101.255",
+    "name": "EVIL-HOSTING",
+    "country": "RU",
+    "startAddress": "185.220.100.0",
+    "endAddress": "185.220.101.255",
+    "entities": [
+        {"roles": ["administrative"],
+         "vcardArray": ["vcard", [["version", {}, "text", "4.0"],
+                                  ["fn", {}, "text", "Evil Hosting LLC"]]]},
+    ],
+}
+
+
+def test_parse_rdap_ip_arin_registrant_and_cidr():
+    from app.tools.netinfo import parse_rdap_ip
+
+    out = parse_rdap_ip(ARIN_RDAP, "rdap.arin.net")
+    assert out["rir"] == "ARIN (North America)"
+    assert out["organization"] == "SendGrid, Inc."
+    assert out["registration_country"] == "US"
+    assert out["netblock"] == ["167.89.0.0/17"]
+
+
+def test_parse_rdap_ip_ripe_fallback_org_and_range():
+    from app.tools.netinfo import parse_rdap_ip
+
+    out = parse_rdap_ip(RIPE_RDAP, "rdap.db.ripe.net")
+    assert out["rir"].startswith("RIPE NCC")
+    # no registrant role: falls back to any named contact
+    assert out["organization"] == "Evil Hosting LLC"
+    assert out["registration_country"] == "RU"
+    assert out["netblock"] == ["185.220.100.0 - 185.220.101.255"]
+    assert out["network_name"] == "EVIL-HOSTING"

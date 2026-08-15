@@ -32,7 +32,8 @@ delivered carrying verdict headers (`X-Spam-Flag`, `X-Spam-Status`,
   OpenAI-compatible endpoint incl. optional **mTLS client-certificate auth**),
   organization/recipient context so *expected* bulk mail is HAM and
   spear-phishing stands out, and evidence-gathering **tool calling**:
-  GeoIP/rDNS, RDAP domain age, MX/SPF/DMARC + brand-impersonation checks,
+  GeoIP/rDNS, RIR (ARIN/RIPE/APNIC/…) ownership correlation of sender IPs and
+  link/image hosts, RDAP domain age, MX/SPF/DMARC + brand-impersonation checks,
   web search + guarded page fetch (message URLs are **never** fetched),
   shared-provider (SendGrid/SES/Mailchimp/ACS…) masquerade detection, and a
   guard-railed **UniFi network-block** integration.

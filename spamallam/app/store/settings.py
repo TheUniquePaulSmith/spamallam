@@ -46,6 +46,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "tools": {
         "ip_lookup": {"enabled": True, "non_us_note": True},
+        "ip_ownership": {"enabled": True, "max_ips": 4},
         "domain_age": {"enabled": True, "young_domain_days": 90},
         "dns_verify": {"enabled": True},
         "web_search": {

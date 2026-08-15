@@ -14,6 +14,14 @@ fetched (activation-link protection).</p>
   <label class="row"><input type="checkbox" name="ip_lookup_non_us"
     {{ 'checked' if cfg.tools.ip_lookup.non_us_note }}><span>Advise the model to weigh non-US origin spam-ward</span></label>
 
+  <h2>ip_ownership</h2>
+  <label class="row"><input type="checkbox" name="ip_ownership_enabled"
+    {{ 'checked' if cfg.tools.ip_ownership.enabled }}><span>RIR (ARIN/RIPE/APNIC/…) ownership correlation of IPs and
+    link/image hostnames — who owns and operates the infrastructure (DNS + registry queries only, never
+    contacts the host)</span></label>
+  <label>Max IPs resolved per hostname
+    <input type="number" name="ip_ownership_max_ips" value="{{ cfg.tools.ip_ownership.max_ips }}"></label>
+
   <h2>domain_age</h2>
   <label class="row"><input type="checkbox" name="domain_age_enabled"
     {{ 'checked' if cfg.tools.domain_age.enabled }}><span>RDAP/WHOIS registration-age lookups</span></label>
