@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Enrollment{% endblock %}
+{% block content %}
+<div class="card narrow center">
+  <h1>Passkey enrollment</h1>
+  {% if not valid %}
+    <p class="error">This enrollment token is invalid or has expired.</p>
+    <p class="muted">The one-time setup token is printed to the spamallam container
+       logs on first boot; invite tokens are issued on the Users page.</p>
+  {% else %}
+    <form id="setup-form" data-token="{{ token }}">
+      {% if fixed_username %}
+        <p>Enrolling as <strong>{{ fixed_username }}</strong></p>
+        <input type="hidden" id="setup-username" value="{{ fixed_username }}">
+      {% else %}
+        <label>Username <input id="setup-username" required pattern="[a-zA-Z0-9._-]+"></label>
+      {% endif %}
+      <label>Display name <input id="setup-display"></label>
+      <label>Passkey label <input id="setup-label" placeholder="e.g. YubiKey 5 / iPhone"></label>
+      <button id="setup-btn" class="primary" type="submit">Create passkey</button>
+    </form>
+    <p id="setup-error" class="error" hidden></p>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Message logs{% endblock %}
+{% block content %}
+<h1>Message logs</h1>
+<form method="get" action="/logs" class="inline-form">
+  <input name="day" value="{{ day }}" placeholder="YYYY-MM-DD">
+  <input name="q" value="{{ q }}" placeholder="search (address, verdict, tool…)">
+  <button>Filter</button>
+</form>
+{% for t in traces %}
+<details class="card trace">
+  <summary>
+    <span class="mono">{{ t.ts }}</span>
+    <strong>{{ t.envelope_from or '<>' }}</strong> → {{ t.rcpt_tos|join(', ') }}
+    · {{ t.verdict.ai_verdict }} {{ '%.2f'|format(t.verdict.ai_confidence or 0) }}
+    · rspamd {{ t.verdict.rspamd_action }} ({{ '%.1f'|format(t.verdict.rspamd_score or 0) }})
+    · <span class="{{ 'warn' if t.action == 'drop' else 'ok' }}">{{ t.action|upper }}</span>
+  </summary>
+  <pre class="log">{{ t|tojson(indent=2) }}</pre>
+</details>
+{% else %}<p class="muted">No traces found.</p>{% endfor %}
+
+<form method="post" action="/settings/logging" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <h2>Logging settings</h2>
+  <label>Retention (days) <input type="number" name="retention_days" value="{{ retention }}"></label>
+  <label class="row"><input type="checkbox" name="log_prompts" checked>
+    <span>Include full prompt/response text in traces</span></label>
+  {% if is_admin %}<button class="primary">Save</button>{% endif %}
+</form>
+{% endblock %}

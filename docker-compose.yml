@@ -1,0 +1,192 @@
+# SpamAllam — secure inbound e-mail gateway stack
+#
+# Internet :25 --(gateway port-forward)--> postfix:2525 -> spamallam (AI) -> rspamd -> internal mail server
+#
+# No privileged ports are used anywhere in this stack. Configure your firewall /
+# gateway (e.g. UniFi) to forward WAN :25 -> <docker-host>:${SMTP_PORT}.
+#
+# All tunables live in .env — see .env.example for documentation of every knob.
+
+name: spamallam
+
+networks:
+  mailnet:
+    driver: bridge
+    ipam:
+      config:
+        # Fixed subnet so postfix can scope mynetworks to exactly this network
+        - subnet: ${DOCKER_SUBNET:-172.28.0.0/24}
+
+volumes:
+  postfix-spool:      # postfix queue (survives restarts so queued mail is not lost)
+  rspamd-data:        # rspamd runtime data (learned state lives in redis, not here)
+  redis-data:         # bayes / fuzzy / greylist state
+  clamav-db:          # virus signature databases (freshclam)
+  spamallam-data:     # declarative file-based config, users, logs for spamallam
+  certs:              # TLS certs — written ONLY by the acme service, read-only everywhere else
+  acme-data:          # acme.sh account/state
+
+services:
+  postfix:
+    build: ./postfix
+    container_name: spamallam-postfix
+    hostname: ${MAIL_HOSTNAME:?set MAIL_HOSTNAME in .env}
+    restart: unless-stopped
+    networks: [mailnet]
+    ports:
+      # Inbound SMTP (forward WAN :25 here). Never below 1024.
+      - "${SMTP_PORT:-2525}:2525"
+      # STARTTLS-enforced inbound listener (forward WAN :587 here if desired).
+      - "${SMTP_TLS_PORT:-2587}:2587"
+    environment:
+      MAIL_HOSTNAME: ${MAIL_HOSTNAME}
+      MAIL_DOMAINS: ${MAIL_DOMAINS:?set MAIL_DOMAINS in .env}
+      MAILSERVER_HOST: ${MAILSERVER_HOST:?set MAILSERVER_HOST in .env}
+      MAILSERVER_PORT: ${MAILSERVER_PORT:-25}
+      RECIPIENT_VALIDATION: ${RECIPIENT_VALIDATION:-domain}
+      RELAY_RECIPIENTS: ${RELAY_RECIPIENTS:-}
+      ENABLE_STARTTLS_PORT: ${ENABLE_STARTTLS_PORT:-true}
+      MESSAGE_SIZE_LIMIT: ${MESSAGE_SIZE_LIMIT:-26214400}
+      JUNK_COMMAND_LIMIT: ${JUNK_COMMAND_LIMIT:-50}
+      SMTPD_CLIENT_CONNECTION_COUNT_LIMIT: ${SMTPD_CLIENT_CONNECTION_COUNT_LIMIT:-10}
+      SMTPD_CLIENT_CONNECTION_RATE_LIMIT: ${SMTPD_CLIENT_CONNECTION_RATE_LIMIT:-30}
+      POSTSCREEN_DNSBL_SITES: ${POSTSCREEN_DNSBL_SITES:-zen.spamhaus.org*3 bl.spamcop.net*2}
+      POSTSCREEN_DNSBL_THRESHOLD: ${POSTSCREEN_DNSBL_THRESHOLD:-3}
+      TLS_CERT_NAME: ${TLS_CERT_NAME:-${MAIL_HOSTNAME}}
+      DOCKER_SUBNET: ${DOCKER_SUBNET:-172.28.0.0/24}
+    volumes:
+      - postfix-spool:/var/spool/postfix
+      - certs:/certs:ro
+    cap_drop: [ALL]
+    # postfix master needs these to run its privilege-separated architecture and
+    # manage the queue; deliberately NO network capabilities (no ports < 1024).
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, KILL, SETGID, SETUID]
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      - spamallam
+    healthcheck:
+      test: ["CMD", "postfix", "status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  spamallam:
+    build: ./spamallam
+    container_name: spamallam-app
+    restart: unless-stopped
+    networks: [mailnet]
+    ports:
+      # Admin UI (HTTPS). Defaults to loopback of the docker host only.
+      # Set ADMIN_BIND to e.g. "192.168.1.10:8443" to expose on your LAN. NEVER expose to WAN.
+      - "${ADMIN_BIND:-127.0.0.1:8443}:8443"
+    environment:
+      MAIL_HOSTNAME: ${MAIL_HOSTNAME}
+      MAIL_DOMAINS: ${MAIL_DOMAINS}
+      HEADER_HMAC_KEY: ${HEADER_HMAC_KEY:?set HEADER_HMAC_KEY in .env}
+      SECRETS_KEY: ${SECRETS_KEY:?set SECRETS_KEY in .env}
+      SETUP_TOKEN: ${SETUP_TOKEN:-}
+      RSPAMD_URL: http://rspamd:11333
+      REINJECT_HOST: postfix
+      REINJECT_PORT: "10025"
+      SMTP_LISTEN_PORT: "10026"
+      ADMIN_PORT: "8443"
+      ADMIN_EXTERNAL_HOST: ${ADMIN_EXTERNAL_HOST:-}
+      TLS_CERT_NAME: ${TLS_CERT_NAME:-${MAIL_HOSTNAME}}
+      MAX_CONCURRENT_ANALYSES: ${MAX_CONCURRENT_ANALYSES:-4}
+      AI_TIMEOUT_SECONDS: ${AI_TIMEOUT_SECONDS:-90}
+      # Seed values for tools (all manageable in the admin UI afterwards)
+      UNIFI_URL: ${UNIFI_URL:-}
+      UNIFI_API_KEY: ${UNIFI_API_KEY:-}
+      UNIFI_NETWORK_LIST: ${UNIFI_NETWORK_LIST:-spamallam-blocked}
+      GEOIP_DB_PATH: ${GEOIP_DB_PATH:-/data/geoip/GeoLite2-City.mmdb}
+    volumes:
+      - spamallam-data:/data
+      - certs:/certs:ro
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      # scratch space (decrypted mTLS material lives here briefly, memory-backed)
+      - /run/spamallam:mode=0700,size=16m
+    depends_on:
+      - rspamd
+
+  rspamd:
+    build: ./rspamd
+    container_name: spamallam-rspamd
+    restart: unless-stopped
+    networks: [mailnet]
+    ports:
+      # rspamd web UI / controller. Loopback of docker host by default; LAN at your choice. NEVER WAN.
+      - "${RSPAMD_UI_BIND:-127.0.0.1:11334}:11334"
+    environment:
+      RSPAMD_PASSWORD: ${RSPAMD_PASSWORD:?set RSPAMD_PASSWORD in .env}
+      HEADER_HMAC_KEY: ${HEADER_HMAC_KEY}
+      VT_API_KEY: ${VT_API_KEY:-}
+      SPAMALLAM_SPAM_WEIGHT: ${SPAMALLAM_SPAM_WEIGHT:-6.0}
+      SPAMALLAM_PHISH_WEIGHT: ${SPAMALLAM_PHISH_WEIGHT:-8.0}
+      SPAMALLAM_MALICIOUS_WEIGHT: ${SPAMALLAM_MALICIOUS_WEIGHT:-12.0}
+      SPAMALLAM_HAM_WEIGHT: ${SPAMALLAM_HAM_WEIGHT:--3.0}
+    volumes:
+      - rspamd-data:/var/lib/rspamd
+    cap_drop: [ALL]
+    # rspamd starts as root to read config then drops to its own user
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      - redis
+      - clamav
+
+  redis:
+    image: redis:7-alpine
+    container_name: spamallam-redis
+    restart: unless-stopped
+    networks: [mailnet]
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "${REDIS_MAXMEMORY:-256mb}", "--maxmemory-policy", "volatile-lru"]
+    volumes:
+      - redis-data:/data
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+  clamav:
+    image: clamav/clamav:stable
+    container_name: spamallam-clamav
+    restart: unless-stopped
+    networks: [mailnet]
+    environment:
+      CLAMAV_NO_FRESHCLAMD: "false"
+    volumes:
+      - clamav-db:/var/lib/clamav
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 60s
+      start_period: 300s
+
+  acme:
+    build: ./acme
+    container_name: spamallam-acme
+    restart: unless-stopped
+    networks: [mailnet]
+    environment:
+      ACME_DNS_PROVIDER: ${ACME_DNS_PROVIDER:-}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+      ACME_DOMAINS: ${ACME_DOMAINS:-${MAIL_HOSTNAME}}
+      ACME_SERVER: ${ACME_SERVER:-letsencrypt}
+      # Pass through provider credentials, e.g. CF_Token for Cloudflare. Add the
+      # variables your acme.sh DNS provider needs to .env and list them here.
+      CF_Token: ${CF_Token:-}
+      CF_Account_ID: ${CF_Account_ID:-}
+      SYNO_Username: ${SYNO_Username:-}
+      SYNO_Password: ${SYNO_Password:-}
+    volumes:
+      - acme-data:/acme.sh
+      - certs:/certs        # the ONLY service with write access to certs
+    cap_drop: [ALL]
+    # chown of installed certs + crond renewal daemon
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    security_opt:
+      - no-new-privileges:true

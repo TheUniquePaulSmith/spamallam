@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+<div class="card narrow center">
+  <h1>Sign in</h1>
+  <p>Authentication is passkey-only. No passwords exist on this system.</p>
+  <button id="login-btn" class="primary">Sign in with passkey</button>
+  <p id="login-error" class="error" hidden></p>
+  <p class="muted">First time here? Ask an admin for an enrollment link, or use the
+     setup token from the container logs at <code>/setup</code>.</p>
+</div>
+{% endblock %}

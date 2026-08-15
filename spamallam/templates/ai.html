@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}AI settings{% endblock %}
+{% block content %}
+<h1>AI analysis</h1>
+<form method="post" action="/settings/ai" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label class="row">
+    <input type="checkbox" name="enabled" {{ 'checked' if cfg.ai.enabled }}>
+    <span><strong>Enable AI analysis</strong> — every inbound message is analyzed by the
+      configured LLM provider before rspamd scoring</span>
+  </label>
+  <h2>Failure mode</h2>
+  <p class="muted">What happens to a message when the AI provider is unreachable,
+     times out, or errors.</p>
+  <label class="row"><input type="radio" name="failure_mode" value="fail_open"
+      {{ 'checked' if cfg.ai.failure_mode == 'fail_open' }}>
+    <span><strong>Fail open</strong> (default) — deliver with
+      <code>X-SpamAllam-Verdict: ERROR</code>; rspamd's conventional scoring still applies</span></label>
+  <label class="row"><input type="radio" name="failure_mode" value="tempfail"
+      {{ 'checked' if cfg.ai.failure_mode == 'tempfail' }}>
+    <span><strong>Tempfail</strong> — return 451 so postfix queues and retries;
+      guarantees analysis but delays mail during outages</span></label>
+  <h2>Drop threshold</h2>
+  <p class="muted">Messages classified PHISHING or MALICIOUS at or above this confidence
+     are silently discarded (never bounced). Below it they are delivered tagged.</p>
+  <label>Confidence (0.5–1.0)
+    <input type="number" name="drop_threshold" step="0.01" min="0.5" max="1"
+           value="{{ cfg.ai.drop_threshold }}"></label>
+  {% if is_admin %}<button class="primary">Save</button>
+  {% else %}<p class="muted">Read-only: admin privileges required to change settings.</p>{% endif %}
+</form>
+{% endblock %}

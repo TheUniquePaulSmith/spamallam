@@ -1,0 +1,64 @@
+# ============================================================================
+# SpamAllam hardened postfix master.cf — rendered by entrypoint.sh
+# service   type  private unpriv  chroot  wakeup  maxproc command + args
+# ============================================================================
+
+# ---- Inbound SMTP :2525 (postscreen in front) ------------------------------
+2525      inet  n       -       n       -       1       postscreen
+smtpd     pass  -       -       n       -       -       smtpd
+    -o content_filter=spamallam:[spamallam]:10026
+dnsblog   unix  -       -       n       -       0       dnsblog
+tlsproxy  unix  -       -       n       -       0       tlsproxy
+
+${STARTTLS_LISTENER}
+
+# ---- Re-injection listener :10025 (spamallam only; NO content filter) ------
+10025     inet  n       -       n       -       -       smtpd
+    -o syslog_name=postfix/reinject
+    -o content_filter=
+    -o smtpd_client_restrictions=permit_mynetworks,reject
+    -o smtpd_helo_restrictions=permit_mynetworks
+    -o smtpd_sender_restrictions=permit_mynetworks
+    -o smtpd_recipient_restrictions=permit_mynetworks,reject_unauth_destination
+    -o smtpd_relay_restrictions=permit_mynetworks,reject_unauth_destination
+    -o smtpd_data_restrictions=
+    -o smtpd_authorized_xforward_hosts=$mynetworks
+    -o smtpd_tls_security_level=none
+    -o receive_override_options=no_unknown_recipient_checks,no_header_body_checks
+    -o postscreen_access_list=permit_mynetworks
+
+# ---- Content-filter transport towards spamallam ----------------------------
+spamallam unix  -       -       n       -       10      smtp
+    -o syslog_name=postfix/to-spamallam
+    -o smtp_send_xforward_command=yes
+    -o smtp_data_done_timeout=1200s
+    -o smtp_tls_security_level=none
+    -o smtp_host_lookup=dns,native
+    -o max_use=20
+
+# ---- Standard postfix services ---------------------------------------------
+pickup    unix  n       -       n       60      1       pickup
+cleanup   unix  n       -       n       -       0       cleanup
+qmgr      unix  n       -       n       300     1       qmgr
+tlsmgr    unix  -       -       n       1000?   1       tlsmgr
+rewrite   unix  -       -       n       -       -       trivial-rewrite
+bounce    unix  -       -       n       -       0       bounce
+defer     unix  -       -       n       -       0       bounce
+trace     unix  -       -       n       -       0       bounce
+verify    unix  -       -       n       -       1       verify
+flush     unix  n       -       n       1000?   0       flush
+proxymap  unix  -       -       n       -       -       proxymap
+proxywrite unix -       -       n       -       1       proxymap
+smtp      unix  -       -       n       -       -       smtp
+relay     unix  -       -       n       -       -       smtp
+    -o syslog_name=postfix/relay
+showq     unix  n       -       n       -       -       showq
+error     unix  -       -       n       -       -       error
+retry     unix  -       -       n       -       -       error
+discard   unix  -       -       n       -       -       discard
+local     unix  -       n       n       -       -       local
+virtual   unix  -       n       n       -       -       virtual
+lmtp      unix  -       -       n       -       -       lmtp
+anvil     unix  -       -       n       -       1       anvil
+scache    unix  -       -       n       -       1       scache
+postlog   unix-dgram n  -       n       -       1       postlogd

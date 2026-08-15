@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Audit log{% endblock %}
+{% block content %}
+<h1>Admin audit log</h1>
+<p class="muted">Append-only record of who changed what. Secret values are redacted at
+write time — only the fact that they changed is recorded.</p>
+<table class="card">
+  <tr><th>time</th><th>actor</th><th>action</th><th>detail</th></tr>
+  {% for e in entries %}
+  <tr>
+    <td class="mono">{{ e.ts }}</td>
+    <td>{{ e.actor }}</td>
+    <td>{{ e.action }}</td>
+    <td class="mono small">{{ e.detail|tojson }}</td>
+  </tr>
+  {% else %}<tr><td colspan="4" class="muted">No audit entries yet.</td></tr>{% endfor %}
+</table>
+{% endblock %}

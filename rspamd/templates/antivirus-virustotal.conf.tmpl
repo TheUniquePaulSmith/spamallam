@@ -1,0 +1,10 @@
+virustotal {
+  type = "virustotal";
+  apikey = "${VT_API_KEY}";
+  symbol = "VIRUSTOTAL_VIRUS";
+  # hash lookups only; free-tier friendly. Score, don't hard-reject, since VT
+  # positives can be single-engine noise.
+  action = "add header";
+  minimum_engines = 3;
+  full_score_engines = 7;
+}

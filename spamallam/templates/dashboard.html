@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+<div class="grid">
+  <div class="card">
+    <h2>AI analysis</h2>
+    <p class="big {{ 'ok' if cfg.ai.enabled else 'warn' }}">
+      {{ 'ENABLED' if cfg.ai.enabled else 'DISABLED' }}</p>
+    <p class="muted">provider: {{ provider_label }}<br>
+       failure mode: {{ cfg.ai.failure_mode }} · drop ≥ {{ cfg.ai.drop_threshold }}</p>
+  </div>
+  <div class="card">
+    <h2>Overrides</h2>
+    <p>{{ cfg.overrides.whitelist_domains|length }} whitelisted domains,
+       {{ cfg.overrides.whitelist_recipients|length }} whitelisted recipients,
+       {{ cfg.overrides.blocklist_domains|length }} blocklisted domains</p>
+  </div>
+  <div class="card">
+    <h2>Users</h2>
+    <p>{{ users|length }} enrolled ·
+       {{ users.values()|map(attribute='credentials')|map('length')|sum }} passkeys</p>
+  </div>
+</div>
+<div class="card">
+  <h2>Recent messages</h2>
+  {% if traces %}
+  <table>
+    <tr><th>time</th><th>from</th><th>to</th><th>AI verdict</th><th>rspamd</th><th>action</th></tr>
+    {% for t in traces %}
+    <tr>
+      <td>{{ t.ts }}</td>
+      <td>{{ t.envelope_from or '<>' }}</td>
+      <td>{{ t.rcpt_tos|join(', ') }}</td>
+      <td>{{ t.verdict.ai_verdict }} {{ '%.2f'|format(t.verdict.ai_confidence or 0) }}</td>
+      <td>{{ t.verdict.rspamd_action }} ({{ '%.1f'|format(t.verdict.rspamd_score or 0) }})</td>
+      <td class="{{ 'warn' if t.action == 'drop' else 'ok' }}">{{ t.action }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No messages processed yet.</p>{% endif %}
+</div>
+{% endblock %}

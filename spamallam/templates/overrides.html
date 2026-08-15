@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Overrides{% endblock %}
+{% block content %}
+<h1>Overrides</h1>
+<p class="muted">Whitelisted sender domains and named recipients <strong>always pass as
+HAM</strong> — AI analysis is skipped, rspamd is forced to "no action", and the message
+carries a declarative <code>X-SpamAllam-Whitelisted</code> header. This is also the
+correct lever for legitimate bulk senders riding SendGrid/SES/Mailchimp.</p>
+<form method="post" action="/settings/overrides" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="cols">
+    <label>Whitelisted sender domains <span class="muted">(one per line; subdomains match)</span>
+      <textarea name="whitelist_domains" rows="8"
+        placeholder="github.com&#10;synology.com">{{ cfg.overrides.whitelist_domains|join('\n') }}</textarea></label>
+    <label>Whitelisted recipients <span class="muted">(all mail TO these always passes)</span>
+      <textarea name="whitelist_recipients" rows="8"
+        placeholder="press@example.com">{{ cfg.overrides.whitelist_recipients|join('\n') }}</textarea></label>
+    <label>Blocklisted sender domains <span class="muted">(forced SPAM verdict, scored by rspamd)</span>
+      <textarea name="blocklist_domains" rows="8"
+        placeholder="spammy-domain.example">{{ cfg.overrides.blocklist_domains|join('\n') }}</textarea></label>
+  </div>
+  {% if is_admin %}<button class="primary">Save</button>{% endif %}
+</form>
+{% endblock %}
