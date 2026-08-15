@@ -12,7 +12,7 @@ if [ -z "${ACME_DNS_PROVIDER:-}" ]; then
   exec sleep infinity
 fi
 
-ACME="/root/.acme.sh/acme.sh"
+ACME="/usr/local/bin/acme.sh"
 DOMAINS=$(echo "${ACME_DOMAINS}" | tr ',' ' ')
 
 "$ACME" --set-default-ca --server "${ACME_SERVER:-letsencrypt}"

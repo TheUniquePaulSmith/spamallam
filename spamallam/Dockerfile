@@ -21,6 +21,11 @@ ENV PYTHONUNBUFFERED=1 \
     TMPDIR=/run/spamallam
 
 EXPOSE 10026 8443
+
+# Pre-create /data owned by spamallam so a fresh named volume mounted here
+# inherits this ownership on first creation (container never runs as root).
+RUN mkdir -p /data && chown spamallam:spamallam /data
+
 USER spamallam
 
 CMD ["python", "-m", "app.main"]
