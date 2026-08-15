@@ -113,8 +113,10 @@ services:
       - no-new-privileges:true
     read_only: true
     tmpfs:
-      # scratch space (decrypted mTLS material lives here briefly, memory-backed)
-      - /run/spamallam:mode=0700,size=16m
+      # scratch space (decrypted mTLS material lives here briefly, memory-backed).
+      # uid/gid=1000 (spamallam): a tmpfs mount defaults to root:root ownership,
+      # and the container never runs as root, so without this the mTLS write fails.
+      - /run/spamallam:mode=0700,uid=1000,gid=1000,size=16m
     depends_on:
       - rspamd
 
