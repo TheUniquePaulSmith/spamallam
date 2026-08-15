@@ -24,7 +24,11 @@ EXPOSE 10026 8443
 
 # Pre-create /data owned by spamallam so a fresh named volume mounted here
 # inherits this ownership on first creation (container never runs as root).
-RUN mkdir -p /data && chown spamallam:spamallam /data
+# Also normalize app source permissions: COPY preserves build-context file
+# modes verbatim, so a restrictive host umask (e.g. files copied at 600)
+# would otherwise leave spamallam unable to read its own source at runtime.
+RUN mkdir -p /data && chown spamallam:spamallam /data \
+    && chmod -R a+rX /opt/spamallam
 
 USER spamallam
 
