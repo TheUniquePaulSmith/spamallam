@@ -151,6 +151,9 @@ services:
     volumes:
       - redis-data:/data
     cap_drop: [ALL]
+    # redis-server's official entrypoint starts as root and uses setpriv to
+    # drop to the redis user; without these caps setpriv fails and it crash-loops.
+    cap_add: [SETUID, SETGID]
     security_opt:
       - no-new-privileges:true
 
