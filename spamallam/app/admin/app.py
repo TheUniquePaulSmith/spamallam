@@ -288,6 +288,8 @@ def create_app() -> FastAPI:
         values: dict[str, Any] = {
             "tools.ip_lookup.enabled": on("ip_lookup_enabled"),
             "tools.ip_lookup.non_us_note": on("ip_lookup_non_us"),
+            "tools.ip_ownership.enabled": on("ip_ownership_enabled"),
+            "tools.ip_ownership.max_ips": int(form.get("ip_ownership_max_ips", 4) or 4),
             "tools.domain_age.enabled": on("domain_age_enabled"),
             "tools.domain_age.young_domain_days": int(form.get("young_domain_days", 90) or 90),
             "tools.dns_verify.enabled": on("dns_verify_enabled"),

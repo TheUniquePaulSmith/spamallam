@@ -10,9 +10,9 @@ from . import netinfo, providers_db, unifi, webtools
 
 _DEFINITIONS: dict[str, dict[str, Any]] = {
     "ip_lookup": {
-        "description": ("Look up an IP address: reverse DNS, GeoIP country/city/ASN, and "
-                        "whether it belongs to a known shared mail provider. Use on the "
-                        "connecting client IP and Received-chain hops."),
+        "description": ("Look up an IP address: reverse DNS, GeoIP country/city/ASN, RIR "
+                        "registry ownership, and whether it belongs to a known shared mail "
+                        "provider. Use on the connecting client IP and Received-chain hops."),
         "parameters": {
             "type": "object",
             "properties": {"ip": {"type": "string", "description": "IPv4/IPv6 address"}},
@@ -27,6 +27,22 @@ _DEFINITIONS: dict[str, dict[str, Any]] = {
             "type": "object",
             "properties": {"domain": {"type": "string"}},
             "required": ["domain"],
+        },
+    },
+    "ip_ownership": {
+        "description": ("Regional Internet Registry (RDAP) ownership lookup: WHO owns and "
+                        "operates an IP address or every IP a hostname resolves to — owning "
+                        "organization, registration country, RIR and netblock. Uses DNS and "
+                        "registry queries ONLY (never contacts the target host), so it is safe "
+                        "on hostnames from message links/images. Use it to correlate sending "
+                        "IP vs sender-domain hosting vs link/image hosting: e.g. mail carried "
+                        "by SendGrid whose links resolve to an unrelated foreign-registered "
+                        "network is a masquerade indicator."),
+        "parameters": {
+            "type": "object",
+            "properties": {"target": {"type": "string",
+                                      "description": "IP address or hostname to attribute"}},
+            "required": ["target"],
         },
     },
     "dns_verify": {
@@ -150,6 +166,8 @@ async def execute(
 
     if name == "ip_lookup":
         return await netinfo.ip_lookup(arguments, cfg)
+    if name == "ip_ownership":
+        return await netinfo.ip_ownership(arguments, cfg)
     if name == "domain_age":
         return await netinfo.domain_age(arguments, cfg)
     if name == "dns_verify":
