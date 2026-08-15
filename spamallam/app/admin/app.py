@@ -246,6 +246,7 @@ def create_app() -> FastAPI:
     async def provider_models(request: Request):
         from ..providers.anthropic_provider import AnthropicProvider
         from ..providers.base import ProviderSettings
+        from ..providers.factory import build_mtls_context
         from ..providers.openai_provider import OpenAIProvider
 
         username = security.require_user(request)
@@ -257,13 +258,27 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="bad provider type")
         if ptype == "custom" and not base_url:
             raise HTTPException(status_code=400, detail="custom provider requires a base_url")
+
+        box = _box()
+        saved = SETTINGS.all()["provider"]
         if not api_key:
             # blank key in the (unsaved) form = use whatever is already stored
-            saved = SETTINGS.all()["provider"]
             if saved.get("type") == ptype and SecretsBox.is_encrypted(saved.get("api_key")):
-                api_key = _box().decrypt_str(saved["api_key"])
+                api_key = box.decrypt_str(saved["api_key"])
 
-        ps = ProviderSettings(type=ptype, model="", api_key=api_key, base_url=base_url)
+        ssl_ctx = None
+        mtls_cfg = saved.get("mtls") or {}
+        if ptype == "custom" and mtls_cfg.get("enabled") and mtls_cfg.get("pfx"):
+            # mTLS is stored (not something the fetch-models form re-uploads),
+            # so always apply the currently-saved client cert + skip_verify.
+            try:
+                ssl_ctx = build_mtls_context(box, mtls_cfg)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=400,
+                                    detail=f"mTLS setup failed: {type(exc).__name__}: {exc}")
+
+        ps = ProviderSettings(type=ptype, model="", api_key=api_key, base_url=base_url,
+                              ssl_context=ssl_ctx)
         provider = AnthropicProvider(ps) if ptype == "anthropic" else OpenAIProvider(ps)
         try:
             models = await provider.list_models()

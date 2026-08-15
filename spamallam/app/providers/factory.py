@@ -18,7 +18,7 @@ from .base import BaseProvider, ProviderSettings
 from .openai_provider import OpenAIProvider
 
 
-def _mtls_context(box: SecretsBox, mtls_cfg: dict[str, Any]) -> ssl.SSLContext:
+def build_mtls_context(box: SecretsBox, mtls_cfg: dict[str, Any]) -> ssl.SSLContext:
     """Decrypt the stored PFX (+password), load into an SSLContext via a
     short-lived file on the tmpfs scratch mount, then remove the file.
 
@@ -72,7 +72,7 @@ def load_provider(settings_all: dict[str, Any], box: SecretsBox) -> BaseProvider
 
     ssl_ctx = None
     if ptype == "custom" and cfg.get("mtls", {}).get("enabled") and cfg["mtls"].get("pfx"):
-        ssl_ctx = _mtls_context(box, cfg["mtls"])
+        ssl_ctx = build_mtls_context(box, cfg["mtls"])
 
     ps = ProviderSettings(
         type=ptype,
