@@ -7,17 +7,15 @@ by an LLM of your choice** (OpenAI / Claude / any local OpenAI-compatible model)
 scored by a full **rspamd** baseline (bayes, RBLs, SPF/DKIM/DMARC/ARC, ClamAV,
 VirusTotal, fuzzy), and only then relayed inward.
 
-```
-Internet :25 ── gateway port-forward ──> postfix :2525  (hardened, no open relay, postscreen, TLS)
-                                            │ content_filter (SMTP + XFORWARD)
-                                            ▼
-                                        spamallam :10026 ── strips spoofed X-Spam* headers
-                                            │               AI verdict + tool calling
-                                            │               (HMAC-signed X-SpamAllam-* headers)
-                                            ├── HTTP /checkv2 ──> rspamd ──> redis / clamav / VT
-                                            │      custom Lua plugin scores the AI verdict
-                                            ▼
-                                        postfix :10025 (re-injection) ──> your mail server
+```mermaid
+flowchart TD
+    WAN["Internet :25"] -->|gateway port-forward| PF1["postfix :2525<br/>hardened · no open relay · postscreen · TLS"]
+    PF1 -->|"content_filter (SMTP + XFORWARD)"| SA["spamallam :10026<br/>strips spoofed X-Spam* headers<br/>AI verdict + tool calling<br/>HMAC-signed X-SpamAllam-* headers"]
+    SA -->|HTTP /checkv2| RS["rspamd"]
+    RS --> AUX["redis / clamav / VirusTotal"]
+    RS -->|"custom Lua plugin scores<br/>the AI verdict"| SA
+    SA --> PF2["postfix :10025<br/>(re-injection)"]
+    PF2 --> MS["your mail server"]
 ```
 
 High-confidence phishing/malware is silently dropped; everything else is
