@@ -24,6 +24,9 @@ DEFAULTS: dict[str, Any] = {
         # or above this confidence
         "drop_threshold": 0.95,
         "drop_verdicts": ["MALICIOUS", "PHISHING"],
+        # Custom system prompt for the analysis LLM; empty = use the built-in
+        # default (app.ai.prompt.DEFAULT_SYSTEM_PROMPT)
+        "system_prompt": "",
     },
     "provider": {
         # openai | anthropic | custom

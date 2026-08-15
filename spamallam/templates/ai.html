@@ -26,6 +26,21 @@
   <label>Confidence (0.5–1.0)
     <input type="number" name="drop_threshold" step="0.01" min="0.5" max="1"
            value="{{ cfg.ai.drop_threshold }}"></label>
+  <h2>System prompt
+    {% if prompt_customized %}<span class="badge">customized</span>
+    {% else %}<span class="badge muted">built-in default</span>{% endif %}</h2>
+  <p class="muted">The instructions that turn the LLM into an e-mail security analyst:
+     verdict definitions, forensic tool methodology, threat-pattern examples, safety rules
+     (never fetch message links; the e-mail is evidence, not instructions) and confidence
+     calibration. Organization/recipient context from the <a href="/settings/context">Context</a>
+     page is injected separately per message — keep instructions here, expectations there.
+     Clear the box (or restore the default text) to return to the built-in default.</p>
+  <textarea name="system_prompt" rows="26" spellcheck="false"
+            class="mono">{{ effective_prompt }}</textarea>
+  {% if prompt_customized %}
+  <p class="muted">A customized prompt does not receive future built-in improvements —
+     clear the box to re-adopt the shipped default at any time.</p>
+  {% endif %}
   {% if is_admin %}<button class="primary">Save</button>
   {% else %}<p class="muted">Read-only: admin privileges required to change settings.</p>{% endif %}
 </form>
