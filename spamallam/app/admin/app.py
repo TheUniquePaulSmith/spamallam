@@ -196,35 +196,30 @@ def create_app() -> FastAPI:
     async def provider_save(request: Request, csrf: str = Form(...),
                             ptype: str = Form(...), model: str = Form(...),
                             base_url: str = Form(""), api_key: str = Form(""),
-                            timeout_seconds: int = Form(60), max_tokens: int = Form(1024)):
+                            timeout_seconds: int = Form(60), max_tokens: int = Form(1024),
+                            mtls_enabled: str = Form("off"),
+                            pfx: UploadFile | None = File(None),
+                            pfx_password: str = Form(""),
+                            skip_verify: str = Form("off"),
+                            mtls_clear: str = Form("")):
         username = security.require_admin(request)
         security.check_csrf(username, csrf)
         if ptype not in ("openai", "anthropic", "custom"):
             raise HTTPException(status_code=400, detail="bad provider type")
+        box = _box()
         values: dict[str, Any] = {
             "provider.type": ptype,
             "provider.model": model.strip(),
             "provider.base_url": base_url.strip(),
             "provider.timeout_seconds": max(5, min(600, timeout_seconds)),
             "provider.max_tokens": max(64, min(32768, max_tokens)),
+            "provider.mtls.enabled": mtls_enabled == "on",
+            "provider.mtls.skip_verify": skip_verify == "on",
         }
         if api_key.strip():  # blank = keep existing
-            values["provider.api_key"] = _box().encrypt(api_key.strip())
-        changes = SETTINGS.update(values)
-        audit.record_changes(username, changes)
-        return RedirectResponse("/settings/provider", status_code=303)
+            values["provider.api_key"] = box.encrypt(api_key.strip())
 
-    @app.post("/settings/provider/mtls")
-    async def provider_mtls(request: Request, csrf: str = Form(...),
-                            enabled: str = Form("off"),
-                            pfx: UploadFile | None = File(None),
-                            pfx_password: str = Form(""),
-                            clear: str = Form("")):
-        username = security.require_admin(request)
-        security.check_csrf(username, csrf)
-        box = _box()
-        values: dict[str, Any] = {"provider.mtls.enabled": enabled == "on"}
-        if clear == "on":
+        if mtls_clear == "on":
             values["provider.mtls.pfx"] = None
             values["provider.mtls.pfx_password"] = None
             values["provider.mtls.enabled"] = False
@@ -236,6 +231,7 @@ def create_app() -> FastAPI:
                 values["provider.mtls.pfx"] = box.encrypt(data)
             if pfx_password:
                 values["provider.mtls.pfx_password"] = box.encrypt(pfx_password)
+
         changes = SETTINGS.update(values)
         audit.record_changes(username, changes)
         return RedirectResponse("/settings/provider", status_code=303)
