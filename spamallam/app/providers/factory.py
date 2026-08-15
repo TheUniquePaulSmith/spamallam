@@ -48,6 +48,12 @@ def _mtls_context(box: SecretsBox, mtls_cfg: dict[str, Any]) -> ssl.SSLContext:
         os.close(fd)
         ctx = ssl.create_default_context()
         ctx.load_cert_chain(path)
+        if mtls_cfg.get("skip_verify"):
+            # Client cert is still sent (mTLS auth to the proxy); we just stop
+            # verifying the SERVER's cert chain, for self-signed/internal-CA
+            # endpoints where the proxy in front already authenticates us.
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
     finally:
         try:
             os.unlink(path)

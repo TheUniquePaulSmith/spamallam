@@ -40,6 +40,10 @@ DEFAULTS: dict[str, Any] = {
             "enabled": False,
             "pfx": None,         # encrypted blob of the PFX file bytes
             "pfx_password": None,  # encrypted blob
+            # Skip verifying the SERVER's TLS certificate chain (client cert is
+            # still presented). For self-signed/internal-CA endpoints where a
+            # proxy in front already authenticates the client cert itself.
+            "skip_verify": False,
         },
     },
     "context": {
