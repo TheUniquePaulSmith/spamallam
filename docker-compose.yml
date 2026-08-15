@@ -92,6 +92,9 @@ services:
       SMTP_LISTEN_PORT: "10026"
       ADMIN_PORT: "8443"
       ADMIN_EXTERNAL_HOST: ${ADMIN_EXTERNAL_HOST:-}
+      # The host-published port from ADMIN_BIND (e.g. 25443), used only to build
+      # correct setup/invite links — the container itself always listens on 8443.
+      ADMIN_EXTERNAL_PORT: ${ADMIN_EXTERNAL_PORT:-}
       # Admin UI serves the cert matching its own hostname when one is set,
       # falling back to the mail cert for single-hostname deployments.
       TLS_CERT_NAME: ${ADMIN_TLS_CERT_NAME:-${ADMIN_EXTERNAL_HOST:-${MAIL_HOSTNAME}}}

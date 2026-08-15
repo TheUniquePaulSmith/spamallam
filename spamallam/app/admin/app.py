@@ -246,6 +246,36 @@ def create_app() -> FastAPI:
         audit.record(username, "provider.test", {})
         return await run_provider_test()
 
+    @app.post("/api/provider/models")
+    async def provider_models(request: Request):
+        from ..providers.anthropic_provider import AnthropicProvider
+        from ..providers.base import ProviderSettings
+        from ..providers.openai_provider import OpenAIProvider
+
+        username = security.require_user(request)
+        body = await request.json()
+        ptype = str(body.get("ptype", "")).lower()
+        base_url = str(body.get("base_url", "")).strip()
+        api_key = str(body.get("api_key", "")).strip()
+        if ptype not in ("openai", "anthropic", "custom"):
+            raise HTTPException(status_code=400, detail="bad provider type")
+        if ptype == "custom" and not base_url:
+            raise HTTPException(status_code=400, detail="custom provider requires a base_url")
+        if not api_key:
+            # blank key in the (unsaved) form = use whatever is already stored
+            saved = SETTINGS.all()["provider"]
+            if saved.get("type") == ptype and SecretsBox.is_encrypted(saved.get("api_key")):
+                api_key = _box().decrypt_str(saved["api_key"])
+
+        ps = ProviderSettings(type=ptype, model="", api_key=api_key, base_url=base_url)
+        provider = AnthropicProvider(ps) if ptype == "anthropic" else OpenAIProvider(ps)
+        try:
+            models = await provider.list_models()
+        except Exception as exc:  # noqa: BLE001 — surfaced to the admin as-is
+            raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {exc}")
+        audit.record(username, "provider.models_fetch", {"ptype": ptype, "count": len(models)})
+        return {"models": models}
+
     # ------------------------------------------------------- settings: context
     @app.get("/settings/context", response_class=HTMLResponse)
     async def context_page(request: Request):
@@ -355,6 +385,39 @@ def create_app() -> FastAPI:
         audit.record_changes(username, changes)
         return RedirectResponse("/settings/overrides", status_code=303)
 
+    # -------------------------------------------------------------- test message
+    @app.get("/test", response_class=HTMLResponse)
+    async def test_page(request: Request):
+        username = security.require_user(request)
+        return render(request, "test.html", username)
+
+    @app.post("/api/test/message")
+    async def test_message(request: Request, csrf: str = Form(...),
+                           raw_text: str = Form(""), envelope_from: str = Form(""),
+                           rcpt_tos: str = Form(""), client_ip: str = Form(""),
+                           client_helo: str = Form(""),
+                           eml: UploadFile | None = File(None)):
+        from ..pipeline.analyzer import process_test
+
+        username = security.require_user(request)
+        security.check_csrf(username, csrf)
+
+        if eml is not None and eml.filename:
+            data = await eml.read()
+        else:
+            data = raw_text.encode("utf-8")
+        if not data.strip():
+            raise HTTPException(status_code=400, detail="paste an e-mail or upload a .eml file")
+        if len(data) > 10 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="message too large (10 MiB limit)")
+
+        rcpts = [r.strip() for r in rcpt_tos.split(",") if r.strip()] or ["test@example.com"]
+        client = {"addr": client_ip.strip() or "203.0.113.10", "helo": client_helo.strip(), "name": ""}
+        result = await process_test(data, envelope_from.strip() or "test@example.com", rcpts, client)
+        audit.record(username, "test.message",
+                     {"envelope_from": envelope_from, "action": result["action"]})
+        return result
+
     # ------------------------------------------------------------------- logs
     @app.get("/logs", response_class=HTMLResponse)
     async def logs_page(request: Request, day: str = "", q: str = ""):
@@ -394,7 +457,7 @@ def create_app() -> FastAPI:
         username = security.require_user(request)
         return render(request, "users.html", username,
                       users=users_store.all_users(), invite_token=invite_token,
-                      admin_host=ENV.admin_external_host, admin_port=ENV.admin_port)
+                      invite_url=ENV.admin_external_url(f"/setup?token={invite_token}") if invite_token else "")
 
     @app.post("/users/invite")
     async def users_invite(request: Request, csrf: str = Form(...),

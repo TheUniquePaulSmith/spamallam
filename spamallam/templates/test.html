@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Test message{% endblock %}
+{% block content %}
+<h1>Test message</h1>
+<p class="muted">Runs a real e-mail through the live pipeline (overrides → AI analysis → rspamd →
+   combined decision) without delivering it anywhere. This uses your configured provider and
+   enabled tools, so tool side effects (e.g. UniFi auto-block) apply exactly as they would for
+   real mail — nothing here is faked or sandboxed.</p>
+
+<form id="test-message-form" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label>Upload .eml file
+    <input type="file" name="eml" accept=".eml,message/rfc822,.txt"></label>
+  <label>…or paste raw e-mail source (headers + blank line + body)
+    <textarea name="raw_text" rows="14" placeholder="From: sender@example.com
+To: you@yourdomain.com
+Subject: Example
+Date: Mon, 1 Jan 2026 00:00:00 -0000
+
+Body text here."></textarea></label>
+  <div class="cols">
+    <label>Envelope From <input name="envelope_from" placeholder="defaults to test@example.com"></label>
+    <label>Rcpt To <span class="muted">(comma-separated)</span>
+      <input name="rcpt_tos" placeholder="defaults to test@example.com"></label>
+  </div>
+  <div class="cols">
+    <label>Client IP <span class="muted">(simulated sending host — affects rspamd RBL/geo checks)</span>
+      <input name="client_ip" placeholder="defaults to 203.0.113.10 (documentation range)"></label>
+    <label>HELO <input name="client_helo"></label>
+  </div>
+  <button id="test-message-btn" class="primary" type="button">Run through pipeline</button>
+</form>
+
+<div id="test-message-summary" class="card" hidden>
+  <h2>Overall</h2>
+  <table>
+    <tr><th>Decision</th><td id="tm-action"></td></tr>
+    <tr><th>Reason</th><td id="tm-reason"></td></tr>
+    <tr><th>AI verdict</th><td id="tm-ai-verdict"></td></tr>
+    <tr><th>rspamd action</th><td id="tm-rspamd-action"></td></tr>
+    <tr><th>rspamd score</th><td id="tm-rspamd-score"></td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Full technical trace</h2>
+  <pre id="test-message-output" class="log" hidden></pre>
+</div>
+{% endblock %}
