@@ -43,7 +43,9 @@ class Env:
         default_factory=lambda: _env("ADMIN_EXTERNAL_HOST") or _env("MAIL_HOSTNAME", "localhost")
     )
     tls_cert_name: str = field(
-        default_factory=lambda: _env("TLS_CERT_NAME") or _env("MAIL_HOSTNAME", "localhost")
+        default_factory=lambda: _env("TLS_CERT_NAME")
+        or _env("ADMIN_EXTERNAL_HOST", "").split(":")[0]
+        or _env("MAIL_HOSTNAME", "localhost")
     )
     certs_dir: Path = field(default_factory=lambda: Path(_env("CERTS_DIR", "/certs")))
     scratch_dir: Path = field(default_factory=lambda: Path(_env("TMPDIR", "/run/spamallam")))

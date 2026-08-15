@@ -92,7 +92,9 @@ services:
       SMTP_LISTEN_PORT: "10026"
       ADMIN_PORT: "8443"
       ADMIN_EXTERNAL_HOST: ${ADMIN_EXTERNAL_HOST:-}
-      TLS_CERT_NAME: ${TLS_CERT_NAME:-${MAIL_HOSTNAME}}
+      # Admin UI serves the cert matching its own hostname when one is set,
+      # falling back to the mail cert for single-hostname deployments.
+      TLS_CERT_NAME: ${ADMIN_TLS_CERT_NAME:-${ADMIN_EXTERNAL_HOST:-${MAIL_HOSTNAME}}}
       MAX_CONCURRENT_ANALYSES: ${MAX_CONCURRENT_ANALYSES:-4}
       AI_TIMEOUT_SECONDS: ${AI_TIMEOUT_SECONDS:-90}
       # Seed values for tools (all manageable in the admin UI afterwards)
