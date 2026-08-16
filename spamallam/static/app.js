@@ -110,7 +110,8 @@ if (fetchModelsBtn) {
 function verdictBadgeClass(v) {
   if (v === "HAM") return "ok";
   if (v === "SPAM") return "warn";
-  return "error"; // PHISHING, MALICIOUS
+  if (v === "PHISHING" || v === "MALICIOUS") return "error";
+  return ""; // SKIPPED, ERROR, unknown — neutral, not alarming (full-pipeline-only states)
 }
 
 function renderTestEvent(ev, i) {
@@ -135,10 +136,47 @@ function renderTestEvent(ev, i) {
     summary += `: ${ev.tool}`;
     body = `<p><strong>Arguments</strong></p><pre class="log">${escapeHtml(JSON.stringify(ev.arguments, null, 2))}</pre>` +
            `<p><strong>Result</strong></p><pre class="log">${escapeHtml(JSON.stringify(ev.result, null, 2))}</pre>`;
+  } else if (kind === "rspamd") {
+    const nsym = ev.symbols ? Object.keys(ev.symbols).length : 0;
+    summary += ` — action: ${ev.action}, score: ${ev.score} (${nsym} symbol(s) — see the rspamd symbols table above)`;
+  } else if (kind === "rspamd_error" || kind === "ai_error") {
+    summary += `: ${ev.error || ""}`;
+  } else if (kind === "ai_skipped") {
+    summary += `: ${ev.reason || ""}`;
+  } else if (kind === "whitelist" || kind === "blocklist") {
+    summary += `: rule=${ev.rule || ""}`;
+  } else if (kind === "headers_stripped") {
+    summary += `: ${ev.count} header(s) removed (spoofed X-SpamAllam-*/X-Spam-* on inbound)`;
+    body = `<pre class="log">${escapeHtml((ev.headers || []).join("\n"))}</pre>`;
   } else {
     body = `<pre class="log">${escapeHtml(JSON.stringify(ev, null, 2))}</pre>`;
   }
   return `<details class="card trace"><summary>${escapeHtml(summary)}</summary>${body}</details>`;
+}
+
+function renderSymbolsTable(symbols) {
+  const rows = Object.entries(symbols || {})
+    .map(([name, score]) => {
+      const ref = (typeof RSPAMD_SYMBOLS !== "undefined" && RSPAMD_SYMBOLS[name]) || null;
+      return { name, score: Number(score) || 0, group: ref ? ref.group : "", description: ref ? ref.description : "" };
+    })
+    .sort((a, b) => Math.abs(b.score) - Math.abs(a.score));
+  const trs = rows.map((r) => `<tr>
+      <td class="mono">${escapeHtml(r.name)}</td>
+      <td>${r.group ? `<span class="badge">${escapeHtml(r.group)}</span>` : '<span class="muted">—</span>'}</td>
+      <td class="${r.score > 0 ? "warn" : (r.score < 0 ? "ok" : "muted")}">${r.score.toFixed(2)}</td>
+      <td>${r.description ? escapeHtml(r.description) : '<span class="muted">no reference available</span>'}</td>
+    </tr>`).join("");
+  return `<div class="card">
+    <h3>rspamd symbols</h3>
+    <p class="muted small">Sorted by impact (largest |score| first). Positive scores push toward spam/reject,
+       negative scores push toward ham. Descriptions and modules come from rspamd's default configuration and
+       may not reflect local score overrides in this deployment.</p>
+    <table>
+      <tr><th>Symbol</th><th>Module</th><th>Score</th><th>Meaning</th></tr>
+      ${trs || '<tr><td colspan="4" class="muted">no symbols fired</td></tr>'}
+    </table>
+  </div>`;
 }
 
 function renderProviderTest(result) {
@@ -225,34 +263,89 @@ if (testToggleRaw) {
   });
 }
 
-/* ---- test message (full pipeline: overrides -> AI -> rspamd) ---- */
+/* ---- test message: formatted rendering (+ raw JSON toggle) ---- */
+function actionBadgeClass(action) {
+  if (action === "drop") return "error";
+  if (action === "tempfail") return "warn";
+  return "ok"; // deliver
+}
+
+function renderMessageTest(result) {
+  const parts = [];
+  const v = result.verdict || {};
+
+  parts.push(`<div class="card">
+    <p class="big"><span class="badge ${actionBadgeClass(result.action)}">${escapeHtml((result.action || "").toUpperCase())}</span></p>
+    ${result.reason ? `<p><strong>Reason:</strong> ${escapeHtml(result.reason)}</p>` : ""}
+  </div>`);
+
+  parts.push(`<div class="card">
+    <h3>AI analysis</h3>
+    <p><span class="badge ${verdictBadgeClass(v.ai_verdict)}">${escapeHtml(v.ai_verdict || "?")}</span>
+       ${Math.round((v.ai_confidence || 0) * 100)}% confidence</p>
+    ${v.ai_category ? `<p><strong>Category:</strong> ${escapeHtml(v.ai_category)}</p>` : ""}
+    ${v.ai_reason ? `<p><strong>Reason:</strong> ${escapeHtml(v.ai_reason)}</p>` : ""}
+    ${v.whitelisted ? `<p><strong>Whitelisted:</strong> ${escapeHtml(v.whitelisted)}</p>` : ""}
+    ${v.model ? `<p><strong>Model:</strong> <span class="mono">${escapeHtml(v.model)}</span></p>` : ""}
+    <p><strong>Tools used:</strong> ${
+      (v.tools_used && v.tools_used.length)
+        ? v.tools_used.map((t) => `<span class="badge">${escapeHtml(t)}</span>`).join(" ")
+        : '<span class="muted">none</span>'
+    }</p>
+  </div>`);
+
+  parts.push(`<div class="card">
+    <h3>rspamd</h3>
+    <p><strong>Action:</strong> ${escapeHtml(v.rspamd_action || "(none)")}
+       &nbsp; <strong>Score:</strong> ${v.rspamd_score}</p>
+    <p class="muted small">This deployment's thresholds (rspamd/local.d/actions.conf):
+       greylist &ge; 4, add header (tag as spam) &ge; 6, reject &ge; 15.</p>
+  </div>`);
+
+  const rspamdEvent = (result.events || []).find((e) => e.kind === "rspamd");
+  if (rspamdEvent && rspamdEvent.symbols) {
+    parts.push(renderSymbolsTable(rspamdEvent.symbols));
+  }
+
+  const events = result.events || [];
+  if (events.length) {
+    parts.push("<h3>Full technical trace</h3>");
+    events.forEach((ev, i) => parts.push(renderTestEvent(ev, i)));
+  }
+
+  return parts.join("\n");
+}
+
 const testMessageBtn = document.getElementById("test-message-btn");
 if (testMessageBtn) {
   testMessageBtn.addEventListener("click", async () => {
     const form = document.getElementById("test-message-form");
-    const out = document.getElementById("test-message-output");
+    const wrap = document.getElementById("test-message-result");
     const summary = document.getElementById("test-message-summary");
-    out.hidden = false;
-    out.textContent = "Running message through the pipeline (AI + rspamd)…";
-    summary.hidden = true;
+    const out = document.getElementById("test-message-output");
+    wrap.hidden = false;
+    summary.innerHTML = '<p class="muted">Running message through the pipeline (overrides → AI → rspamd)…</p>';
+    out.textContent = "";
     testMessageBtn.disabled = true;
     try {
       const resp = await fetch("/api/test/message", { method: "POST", body: new FormData(form) });
       const result = await resp.json();
       if (!resp.ok) throw new Error(result.detail || `HTTP ${resp.status}`);
+      summary.innerHTML = renderMessageTest(result);
       out.textContent = JSON.stringify(result, null, 2);
-      const v = result.verdict || {};
-      document.getElementById("tm-action").textContent = (result.action || "").toUpperCase();
-      document.getElementById("tm-reason").textContent = result.reason || "(none)";
-      document.getElementById("tm-ai-verdict").textContent =
-        `${v.ai_verdict || "?"} (${Math.round((v.ai_confidence || 0) * 100)}% confidence) — ${v.ai_reason || ""}`;
-      document.getElementById("tm-rspamd-action").textContent = v.rspamd_action || "";
-      document.getElementById("tm-rspamd-score").textContent = v.rspamd_score;
-      summary.hidden = false;
     } catch (err) {
-      out.textContent = "Test failed: " + (err.message || err);
+      summary.innerHTML = `<p class="error">Test failed: ${escapeHtml(err.message || String(err))}</p>`;
     } finally {
       testMessageBtn.disabled = false;
     }
+  });
+}
+
+const testMessageToggleRaw = document.getElementById("test-message-toggle-raw");
+if (testMessageToggleRaw) {
+  testMessageToggleRaw.addEventListener("click", () => {
+    const out = document.getElementById("test-message-output");
+    out.hidden = !out.hidden;
+    testMessageToggleRaw.textContent = out.hidden ? "Show raw JSON" : "Hide raw JSON";
   });
 }
