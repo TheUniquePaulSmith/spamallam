@@ -142,6 +142,15 @@ mounts docker.sock.
   after every deploy — a wrong default route silently reopens the
   asymmetric-routing/relay issue this network was added to fix. See "Verify
   the macvlan default route" in [SYNOLOGY.md](SYNOLOGY.md).
+- **macvlan can't reach its own host**: if `MAILSERVER_HOST` runs on the same
+  physical machine as this stack (the reference Synology/MailPlus deployment),
+  it must NOT be set to that host's real LAN IP — Linux's macvlan driver
+  cannot route between a macvlan child (postfix, on `mailwan`) and the host
+  that owns the parent interface, full stop, regardless of subnet/routing
+  config. Mail is accepted, scanned, and reinjected normally right up until
+  this last hop, then queues forever as `Host is unreachable` — nothing about
+  it fails loudly earlier. Use the `mailnet` docker bridge gateway IP instead;
+  see the `MAILSERVER_HOST` guidance in [SYNOLOGY.md](SYNOLOGY.md).
 - rspamd's controller UI (:11334) is password-protected but plain HTTP — keep
   it loopback/LAN and treat the password as low-value.
 - `verify` recipient mode probes the internal server; keep it in `domain` mode

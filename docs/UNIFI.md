@@ -23,8 +23,11 @@ avoids (see [SECURITY.md](SECURITY.md)).
 If your mail LAN (`MACVLAN_SUBNET`) is its own VLAN, also confirm UniFi's
 inter-VLAN/firewall rules let WAN-forwarded traffic reach it, and that the
 gateway you set as `MACVLAN_GATEWAY` gives that VLAN normal outbound routing
-(postfix's DNSBL lookups and its relay hop to `MAILSERVER_HOST` both egress
-via this network — see the `gw_priority` note in `docker-compose.yml`).
+— postfix's DNSBL lookups egress via this network (see `postfix/entrypoint.sh`
+for how the default route is pinned there). The relay hop to
+`MAILSERVER_HOST` does **not** use this network; see the `MAILSERVER_HOST`
+guidance in [SYNOLOGY.md](SYNOLOGY.md) if your mail server runs on the same
+host as this stack — macvlan can't reach it directly.
 
 Do **not** forward 8443 (admin UI) or 11334 (rspamd UI) — those are LAN-only.
 

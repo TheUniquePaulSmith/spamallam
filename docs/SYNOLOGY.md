@@ -64,31 +64,46 @@ correct — the entrypoint fails the container outright (check `docker logs
 spamallam-postfix`) if it can't find an interface holding
 `POSTFIX_MACVLAN_IP`. A wrong-but-running result would mean something
 replaced or skipped the entrypoint (e.g. a custom `command:`/`entrypoint:`
-override) — mail may still flow either way (postscreen/DNSBL and the relay
-hop to `MAILSERVER_HOST` work regardless, since `MAILSERVER_HOST` is
-on-link), so this won't fail loudly on its own; don't skip the check.
+override).
 
 ### Move MailPlus off :25
 
 MailPlus Server → **Service** → **SMTP**: change the SMTP port from 25 to your
-chosen internal port (e.g. **2526**), and set `MAILSERVER_HOST` to the NAS LAN IP
-and `MAILSERVER_PORT=2526` in `.env`. MailPlus keeps handling **outbound** mail
-itself — SpamAllam is inbound-only by design.
+chosen internal port (e.g. **2526**), and set `MAILSERVER_PORT=2526` in `.env`.
+MailPlus keeps handling **outbound** mail itself — SpamAllam is inbound-only
+by design.
 
-> If MailPlus is on a different host, just point `MAILSERVER_HOST/PORT` there;
-> nothing else changes.
+**`MAILSERVER_HOST` — read this before setting it**: if MailPlus runs on this
+*same* Synology (the reference deployment this guide covers), do **not** set
+it to the NAS's real LAN IP. Linux's macvlan driver cannot route between a
+macvlan child (postfix, on `mailwan`) and the physical host that owns the
+parent interface — even though they're on the same subnet, the kernel blocks
+it. Mail queues up as `Host is unreachable` and never gets delivered; it will
+look like everything is working (accepted, scanned, reinjected) right up
+until this last hop. Use the `mailnet` docker bridge gateway IP instead — that
+path never touches the macvlan interface, so it isn't affected:
+
+```bash
+docker network inspect spamallam_mailnet --format '{{(index .IPAM.Config 0).Gateway}}'
+docker exec spamallam-postfix nc -zv -w5 <that-gateway-ip> <MAILSERVER_PORT>
+```
+
+If the `nc` check succeeds (it will, unless MailPlus is bound to a specific
+interface rather than all of them), set `MAILSERVER_HOST` to that gateway IP
+— typically `172.28.0.1` for the default `DOCKER_SUBNET`.
+
+> If MailPlus is on a genuinely different physical host, its normal LAN IP is
+> correct as-is — this restriction only applies when it's the same box.
 
 ### Trust the gateway as an internal relay
 
-Now that postfix's outbound relay hop rides the macvlan network's default
-route (see above), MailPlus sees the relay connection arriving **from
-`POSTFIX_MACVLAN_IP`** directly — not from the docker bridge subnet or a
-NAS-NATed address as with plain bridge networking. If `MAILSERVER_HOST` is on
-the same `MACVLAN_SUBNET` as postfix (as it is when MailPlus and
-`POSTFIX_MACVLAN_IP` both live on a dedicated mail VLAN), this connection is
-on-link — no gateway hop, no NAT.
+Because the relay hop targets the `mailnet` bridge gateway rather than going
+out via `mailwan`, MailPlus sees the connection arrive from **postfix's own
+address on the `mailnet` bridge** — i.e. from within `DOCKER_SUBNET` (default
+`172.28.0.0/24`), the same as it would with plain bridge networking and no
+macvlan involved. It is *not* `POSTFIX_MACVLAN_IP`.
 
-MailPlus must accept mail for your domains from `POSTFIX_MACVLAN_IP`:
+MailPlus must accept mail for your domains from `DOCKER_SUBNET`:
 
 - MailPlus Server → **Security** → make sure the NAS/docker source is not
   greylisted/rate-limited.
