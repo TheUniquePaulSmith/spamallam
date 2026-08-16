@@ -92,10 +92,11 @@ class Pipeline:
         if not wl_rule and not bl_rule:
             if cfg["ai"]["enabled"]:
                 try:
+                    timeout = cfg["ai"].get("timeout_seconds") or ENV.ai_timeout_seconds
                     async with self._sem:
                         verdict = await asyncio.wait_for(
                             self._analyze(cleaned, envelope_from, rcpt_tos, client, trace),
-                            timeout=ENV.ai_timeout_seconds,
+                            timeout=timeout,
                         )
                 except Exception as exc:  # noqa: BLE001 — provider/timeout errors -> failure mode
                     trace.event("ai_error", error=f"{type(exc).__name__}: {exc}")

@@ -201,18 +201,29 @@ def create_app() -> FastAPI:
         cfg = SETTINGS.all()
         return render(request, "ai.html", username, cfg=cfg,
                       effective_prompt=system_prompt(cfg["ai"]),
-                      prompt_customized=bool((cfg["ai"].get("system_prompt") or "").strip()))
+                      prompt_customized=bool((cfg["ai"].get("system_prompt") or "").strip()),
+                      env_timeout_seconds=ENV.ai_timeout_seconds)
 
     @app.post("/settings/ai")
     async def ai_save(request: Request, csrf: str = Form(...),
                       enabled: str = Form("off"), failure_mode: str = Form("fail_open"),
-                      drop_threshold: float = Form(0.95), system_prompt: str = Form("")):
+                      drop_threshold: float = Form(0.95), timeout_seconds: str = Form(""),
+                      system_prompt: str = Form("")):
         from ..ai.prompt import DEFAULT_SYSTEM_PROMPT
 
         username = security.require_admin(request)
         security.check_csrf(username, csrf)
         if failure_mode not in ("fail_open", "tempfail"):
             raise HTTPException(status_code=400, detail="bad failure_mode")
+        # Blank -> None (fall back to the AI_TIMEOUT_SECONDS environment default)
+        timeout_raw = timeout_seconds.strip()
+        if timeout_raw:
+            try:
+                timeout_val: float | None = max(5.0, float(timeout_raw))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="timeout must be a number")
+        else:
+            timeout_val = None
         # Normalize: an empty box or unchanged default is stored as "" (use built-in)
         prompt_text = system_prompt.replace("\r\n", "\n").strip()
         if prompt_text == DEFAULT_SYSTEM_PROMPT.strip():
@@ -221,6 +232,7 @@ def create_app() -> FastAPI:
             "ai.enabled": enabled == "on",
             "ai.failure_mode": failure_mode,
             "ai.drop_threshold": max(0.5, min(1.0, drop_threshold)),
+            "ai.timeout_seconds": timeout_val,
             "ai.system_prompt": prompt_text,
         })
         audit.record_changes(username, changes)
