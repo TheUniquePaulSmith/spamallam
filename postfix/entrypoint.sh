@@ -11,6 +11,25 @@ SELF_SIGNED_DIR=/etc/postfix/tls-selfsigned
 log() { echo "[entrypoint] $*"; }
 
 # ---------------------------------------------------------------------------
+# Route inbound-reply traffic out via the macvlan gateway (mailwan), not
+# whatever network Docker happens to pick as the default route. Without this,
+# replies to a connection that arrived on POSTFIX_MACVLAN_IP can leave via a
+# different interface/gateway than they arrived on — the asymmetric routing
+# that let an external sender's traffic appear to originate inside
+# mynetworks in the first place (see docs/SECURITY.md). Requires NET_ADMIN.
+# Interface name is looked up by IP rather than assumed (e.g. "eth1") since
+# Docker's interface-to-network assignment order isn't something this stack
+# controls.
+# ---------------------------------------------------------------------------
+MACVLAN_IFACE=$(ip -4 -o addr show | awk -v ip="$POSTFIX_MACVLAN_IP" '$4 ~ ("^" ip "/") {print $2; exit}')
+if [ -z "$MACVLAN_IFACE" ]; then
+  log "FATAL: no interface holds POSTFIX_MACVLAN_IP (${POSTFIX_MACVLAN_IP}); check the mailwan network"
+  exit 1
+fi
+ip route replace default via "$MACVLAN_GATEWAY" dev "$MACVLAN_IFACE"
+log "default route -> ${MACVLAN_GATEWAY} dev ${MACVLAN_IFACE}"
+
+# ---------------------------------------------------------------------------
 # Derived variables
 # ---------------------------------------------------------------------------
 # mydomain = hostname minus its first label (mail.example.com -> example.com)

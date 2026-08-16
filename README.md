@@ -27,7 +27,9 @@ delivered carrying verdict headers (`X-Spam-Flag`, `X-Spam-Status`,
 - **Hardened inbound-only postfix** — no open relay, no auth, no privileged
   ports anywhere; postscreen + DNSBLs, strict HELO/pipelining/junk-command
   limits, TLS with LetsEncrypt certs, domain-level recipient validation with
-  plus-addressing support.
+  plus-addressing support. Reached via its own macvlan LAN IP rather than
+  docker port-publish NAT, so `mynetworks` always sees genuine client source
+  IPs — no NAT-rewrite path to accidentally trust an internet sender as local.
 - **spamallam AI filter** — pluggable LLM provider (OpenAI, Claude, or a custom
   OpenAI-compatible endpoint incl. optional **mTLS client-certificate auth**),
   organization/recipient context so *expected* bulk mail is HAM and
@@ -60,8 +62,10 @@ docker compose up -d --build
 
 Then:
 
-1. **Forward WAN :25 → docker-host:2525** at your gateway (UniFi: see
-   [docs/UNIFI.md](docs/UNIFI.md)). Optionally :587 → :2587.
+1. **Forward WAN :25 → `POSTFIX_MACVLAN_IP`:2525** at your gateway (UniFi: see
+   [docs/UNIFI.md](docs/UNIFI.md)). Optionally :587 → :2587. postfix is reached
+   directly on its own macvlan LAN IP, not the docker host — see
+   `MACVLAN_*`/`POSTFIX_MACVLAN_IP` in `.env.example`.
 2. **Enroll the first admin**: `docker logs spamallam-app` prints a one-time
    `https://<host>:8443/setup?token=…` link — open it and register a passkey.
 3. In the admin UI: configure the **LLM provider** (use *Test* to see a full

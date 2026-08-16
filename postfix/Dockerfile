@@ -1,6 +1,6 @@
 FROM alpine:3.20
 
-RUN apk add --no-cache postfix postfix-pcre gettext openssl ca-certificates tzdata
+RUN apk add --no-cache postfix postfix-pcre gettext openssl ca-certificates tzdata iproute2
 
 COPY templates/ /etc/postfix/templates/
 COPY entrypoint.sh /entrypoint.sh
