@@ -11,7 +11,7 @@ mail that doesn't fit your workflows stands out as spear-phishing.</p>
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <label>Tell me about your organization / business
     <textarea name="organization" rows="5"
-      placeholder="e.g. Fractal Engine is a one-person software consultancy in the US. We never deal in crypto, gambling or real estate.">{{ cfg.context.organization }}</textarea></label>
+      placeholder="e.g. SpamAllam is a one-person software consultancy in the US. We never deal in crypto, gambling or real estate.">{{ cfg.context.organization }}</textarea></label>
   <label>Tell me about the type of mail you expect to receive
     <textarea name="expected_mail" rows="5"
       placeholder="e.g. GitHub/Synology/UniFi notifications, invoices from Hetzner, tech newsletters (LWN, TLDR), family mail from gmail.com.">{{ cfg.context.expected_mail }}</textarea></label>
@@ -35,7 +35,7 @@ mail that doesn't fit your workflows stands out as spear-phishing.</p>
   {% if is_admin %}
   <form method="post" action="/settings/context/recipient" class="inline-form">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <input name="email" type="email" placeholder="paul@fractalengine.com" required>
+    <input name="email" type="email" placeholder="user@example.com" required>
     <textarea name="text" rows="2"
       placeholder="e.g. subscribed to opensea.io and coindesk newsletters — crypto mail TO THIS ADDRESS may be legitimate"></textarea>
     <button class="primary">Add recipient context</button>
