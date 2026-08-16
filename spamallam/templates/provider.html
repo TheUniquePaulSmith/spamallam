@@ -19,9 +19,11 @@
   </div>
   <label>Base URL <span class="muted">(custom provider only, e.g. http://ai-node.lan:11434/v1)</span>
     <input name="base_url" id="base-url-input" value="{{ provider.base_url }}"></label>
-  <label>API key <span class="muted">(stored encrypted; leave blank to keep current:
-      {{ provider.api_key or 'not set' }}; also used for "Fetch available models" above)</span>
-    <input name="api_key" id="api-key-input" type="password" autocomplete="off"></label>
+  <label>API key <span class="muted">(stored encrypted; also used for "Fetch available models" above.
+      Leave as shown to keep it, clear it to remove it, type a new one to replace it.)</span>
+    <input name="api_key" id="api-key-input" type="password" autocomplete="off"
+      value="{{ '__SA_SECRET_UNCHANGED__' if provider.api_key else '' }}">
+    <input type="hidden" name="api_key_changed" id="api-key-changed" value="0"></label>
   <div class="cols">
     <label>Timeout (s) <input name="timeout_seconds" type="number" value="{{ provider.timeout_seconds }}"></label>
     <label>Max tokens <input name="max_tokens" type="number" value="{{ provider.max_tokens }}"></label>
@@ -33,10 +35,20 @@
      exists only in memory during provider calls and is never shown again.</p>
   <label class="row"><input type="checkbox" name="mtls_enabled"
       {{ 'checked' if cfg.provider.mtls.enabled }}> <span>Enable mTLS</span></label>
-  <label>PFX / PKCS#12 file <span class="muted">(current: {{ provider.mtls.pfx or 'not set' }})</span>
-    <input type="file" name="pfx" accept=".pfx,.p12"></label>
-  <label>PFX password <span class="muted">(current: {{ provider.mtls.pfx_password or 'not set' }})</span>
-    <input type="password" name="pfx_password" autocomplete="off"></label>
+  {% if cfg.provider.mtls.pfx %}
+  <label class="row"><input type="checkbox" name="mtls_clear" id="mtls-clear">
+    <span>Remove stored client certificate + password</span></label>
+  <p class="muted small">A certificate is currently stored. To replace it: check the box above, Save,
+     then reload this page and upload the new file.</p>
+  {% else %}
+  <label>PFX / PKCS#12 file <span class="muted">(none stored)</span>
+    <input type="file" name="pfx" id="pfx-input" accept=".pfx,.p12"></label>
+  {% endif %}
+  <label>PFX password <span class="muted">(stored encrypted; leave as shown to keep it, clear it to
+      remove it, type a new one to replace it)</span>
+    <input type="password" name="pfx_password" id="pfx-password-input" autocomplete="off"
+      value="{{ '__SA_SECRET_UNCHANGED__' if provider.mtls.pfx_password else '' }}">
+    <input type="hidden" name="pfx_password_changed" id="pfx-password-changed" value="0"></label>
   <label class="row"><input type="checkbox" name="skip_verify"
       {{ 'checked' if cfg.provider.mtls.skip_verify }}>
     <span>Skip server certificate verification <span class="warn">(insecure)</span></span></label>
@@ -45,7 +57,6 @@
      in front of it) has a self-signed/internal-CA certificate and something in that path already
      authenticates the client certificate itself. Without this, a self-signed server cert fails
      with "unable to get local issuer certificate".</p>
-  <label class="row"><input type="checkbox" name="mtls_clear"> <span>Remove stored certificate + password</span></label>
 
   {% if is_admin %}<button class="primary">Save</button>{% endif %}
 </form>

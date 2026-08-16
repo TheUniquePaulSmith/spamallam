@@ -4,8 +4,10 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -26,6 +28,31 @@ templates = Jinja2Templates(directory=str(ENV.templates_dir))
 
 def _box() -> SecretsBox:
     return SecretsBox(ENV.secrets_key)
+
+
+def _flash_url(url: str, flash: str, msg: str = "") -> str:
+    parts = urlsplit(url)
+    q = dict(parse_qsl(parts.query))
+    q["flash"] = flash
+    if msg:
+        q["msg"] = msg
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(q), parts.fragment))
+
+
+# Form-POST path -> page to redirect back to on a validation/auth failure, with an
+# error flash, instead of the exception handler's default raw-JSON response.
+_HTML_ERROR_REDIRECT = {
+    "/settings/ai": "/settings/ai",
+    "/settings/provider": "/settings/provider",
+    "/settings/context": "/settings/context",
+    "/settings/context/recipient": "/settings/context",
+    "/settings/tools": "/settings/tools",
+    "/settings/overrides": "/settings/overrides",
+    "/settings/logging": "/logs",
+    "/users/invite": "/users",
+    "/users/delete": "/users",
+    "/users/passkey/delete": "/users",
+}
 
 
 def render(request: Request, name: str, username: str | None = None, **ctx: Any) -> HTMLResponse:
@@ -68,9 +95,21 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(HTTPException)
     async def http_exc(request: Request, exc: HTTPException):
-        if exc.status_code == 401 and "text/html" in request.headers.get("accept", ""):
+        accept = request.headers.get("accept", "")
+        if exc.status_code == 401 and "text/html" in accept:
             return RedirectResponse("/login", status_code=303)
+        target = _HTML_ERROR_REDIRECT.get(request.url.path)
+        if target and request.method == "POST" and "text/html" in accept:
+            return RedirectResponse(_flash_url(target, "error", str(exc.detail)), status_code=303)
         return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exc(request: Request, exc: RequestValidationError):
+        accept = request.headers.get("accept", "")
+        target = _HTML_ERROR_REDIRECT.get(request.url.path)
+        if target and request.method == "POST" and "text/html" in accept:
+            return RedirectResponse(_flash_url(target, "error", "invalid input"), status_code=303)
+        return JSONResponse({"detail": exc.errors()}, status_code=422)
 
     # ------------------------------------------------------------------ auth
     @app.get("/login", response_class=HTMLResponse)
@@ -182,7 +221,7 @@ def create_app() -> FastAPI:
             "ai.system_prompt": prompt_text,
         })
         audit.record_changes(username, changes)
-        return RedirectResponse("/settings/ai", status_code=303)
+        return RedirectResponse(_flash_url("/settings/ai", "saved", "Saved."), status_code=303)
 
     # ------------------------------------------------------ settings: provider
     @app.get("/settings/provider", response_class=HTMLResponse)
@@ -196,10 +235,12 @@ def create_app() -> FastAPI:
     async def provider_save(request: Request, csrf: str = Form(...),
                             ptype: str = Form(...), model: str = Form(...),
                             base_url: str = Form(""), api_key: str = Form(""),
+                            api_key_changed: str = Form("0"),
                             timeout_seconds: int = Form(60), max_tokens: int = Form(1024),
                             mtls_enabled: str = Form("off"),
                             pfx: UploadFile | None = File(None),
                             pfx_password: str = Form(""),
+                            pfx_password_changed: str = Form("0"),
                             skip_verify: str = Form("off"),
                             mtls_clear: str = Form("")):
         username = security.require_admin(request)
@@ -216,8 +257,8 @@ def create_app() -> FastAPI:
             "provider.mtls.enabled": mtls_enabled == "on",
             "provider.mtls.skip_verify": skip_verify == "on",
         }
-        if api_key.strip():  # blank = keep existing
-            values["provider.api_key"] = box.encrypt(api_key.strip())
+        if api_key_changed == "1":  # untouched (sentinel still present) -> keep existing
+            values["provider.api_key"] = box.encrypt(api_key.strip()) if api_key.strip() else None
 
         if mtls_clear == "on":
             values["provider.mtls.pfx"] = None
@@ -229,12 +270,12 @@ def create_app() -> FastAPI:
                 if len(data) > 512 * 1024:
                     raise HTTPException(status_code=400, detail="PFX too large")
                 values["provider.mtls.pfx"] = box.encrypt(data)
-            if pfx_password:
-                values["provider.mtls.pfx_password"] = box.encrypt(pfx_password)
+            if pfx_password_changed == "1":
+                values["provider.mtls.pfx_password"] = box.encrypt(pfx_password) if pfx_password else None
 
         changes = SETTINGS.update(values)
         audit.record_changes(username, changes)
-        return RedirectResponse("/settings/provider", status_code=303)
+        return RedirectResponse(_flash_url("/settings/provider", "saved", "Saved."), status_code=303)
 
     @app.post("/api/provider/test")
     async def provider_test(request: Request):
@@ -303,7 +344,7 @@ def create_app() -> FastAPI:
             "context.expected_mail": expected_mail.strip(),
         })
         audit.record_changes(username, changes)
-        return RedirectResponse("/settings/context", status_code=303)
+        return RedirectResponse(_flash_url("/settings/context", "saved", "Saved."), status_code=303)
 
     @app.post("/settings/context/recipient")
     async def context_recipient(request: Request, csrf: str = Form(...),
@@ -319,7 +360,8 @@ def create_app() -> FastAPI:
             per[email_norm] = text.strip()
         changes = SETTINGS.update({"context.per_recipient": per})
         audit.record_changes(username, changes)
-        return RedirectResponse("/settings/context", status_code=303)
+        msg = "Recipient removed." if delete == "on" else "Recipient context saved."
+        return RedirectResponse(_flash_url("/settings/context", "saved", msg), status_code=303)
 
     # --------------------------------------------------------- settings: tools
     @app.get("/settings/tools", response_class=HTMLResponse)
@@ -369,7 +411,7 @@ def create_app() -> FastAPI:
 
         changes = SETTINGS.update(values)
         audit.record_changes(username, changes)
-        return RedirectResponse("/settings/tools", status_code=303)
+        return RedirectResponse(_flash_url("/settings/tools", "saved", "Saved."), status_code=303)
 
     # ----------------------------------------------------- settings: overrides
     @app.get("/settings/overrides", response_class=HTMLResponse)
@@ -394,7 +436,7 @@ def create_app() -> FastAPI:
             "overrides.blocklist_domains": lines(blocklist_domains),
         })
         audit.record_changes(username, changes)
-        return RedirectResponse("/settings/overrides", status_code=303)
+        return RedirectResponse(_flash_url("/settings/overrides", "saved", "Saved."), status_code=303)
 
     # -------------------------------------------------------------- test message
     @app.get("/test", response_class=HTMLResponse)
@@ -450,7 +492,7 @@ def create_app() -> FastAPI:
             "logging.log_prompts": log_prompts == "on",
         })
         audit.record_changes(username, changes)
-        return RedirectResponse("/logs", status_code=303)
+        return RedirectResponse(_flash_url("/logs", "saved", "Saved."), status_code=303)
 
     @app.get("/logs/audit", response_class=HTMLResponse)
     async def audit_page(request: Request):
@@ -478,7 +520,8 @@ def create_app() -> FastAPI:
         token = users_store.create_token(new_username.strip().lower() or None, is_admin == "on")
         audit.record(username, "user.invite",
                      {"username": new_username, "is_admin": is_admin == "on"})
-        return RedirectResponse(f"/users?invite_token={token}", status_code=303)
+        url = _flash_url(f"/users?invite_token={token}", "saved", "Invite link created.")
+        return RedirectResponse(url, status_code=303)
 
     @app.post("/users/delete")
     async def users_delete(request: Request, csrf: str = Form(...), target: str = Form(...)):
@@ -488,7 +531,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="cannot delete yourself")
         if users_store.delete_user(target):
             audit.record(username, "user.delete", {"username": target})
-        return RedirectResponse("/users", status_code=303)
+        return RedirectResponse(_flash_url("/users", "saved", "User deleted."), status_code=303)
 
     @app.post("/api/passkey/options")
     async def passkey_options(request: Request):
@@ -516,6 +559,6 @@ def create_app() -> FastAPI:
                                 detail="cannot remove your last passkey — add another first")
         if users_store.remove_credential(username, cred_id):
             audit.record(username, "user.passkey_removed", {"credential": cred_id[:16]})
-        return RedirectResponse("/users", status_code=303)
+        return RedirectResponse(_flash_url("/users", "saved", "Passkey removed."), status_code=303)
 
     return app

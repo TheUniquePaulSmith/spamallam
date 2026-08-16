@@ -23,6 +23,49 @@ function escapeHtml(s) {
   }[c]));
 }
 
+function showToast(message, type) {
+  const container = document.getElementById("toast-container");
+  if (!container) return;
+  const el = document.createElement("div");
+  el.className = "toast" + (type === "error" ? " error" : "");
+  el.textContent = message;
+  container.appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  const dismiss = () => { el.classList.remove("show"); setTimeout(() => el.remove(), 200); };
+  const timer = setTimeout(dismiss, 4000);
+  el.addEventListener("click", () => { clearTimeout(timer); dismiss(); });
+}
+
+function setButtonBusy(btn, busy, label) {
+  if (!btn) return;
+  if (busy) {
+    if (btn.dataset.originalHtml === undefined) btn.dataset.originalHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.classList.add("busy");
+    btn.innerHTML = `<span class="spinner" aria-hidden="true"></span>${escapeHtml(label || "Working…")}`;
+  } else {
+    btn.disabled = false;
+    btn.classList.remove("busy");
+    if (btn.dataset.originalHtml !== undefined) {
+      btn.innerHTML = btn.dataset.originalHtml;
+      delete btn.dataset.originalHtml;
+    }
+  }
+}
+
+/* ---- flash message from redirect (server-rendered form saves) ---- */
+(function flashFromQuery() {
+  const params = new URLSearchParams(location.search);
+  const flash = params.get("flash");
+  if (flash === "saved") showToast(params.get("msg") || "Saved.", "success");
+  else if (flash === "error") showToast(params.get("msg") || "Something went wrong.", "error");
+  if (flash !== null) {
+    params.delete("flash"); params.delete("msg");
+    const qs = params.toString();
+    history.replaceState(null, "", location.pathname + (qs ? "?" + qs : "") + location.hash);
+  }
+})();
+
 /* ---- login ---- */
 const loginBtn = document.getElementById("login-btn");
 if (loginBtn) {
@@ -65,15 +108,44 @@ const addPasskeyBtn = document.getElementById("add-passkey-btn");
 if (addPasskeyBtn) {
   addPasskeyBtn.addEventListener("click", async () => {
     const label = (document.getElementById("passkey-label") || {}).value || "passkey";
+    setButtonBusy(addPasskeyBtn, true, "Adding…");
     try {
       const { options, sealed } = await postJSON("/api/passkey/options");
       const cred = await navigator.credentials.create(prepareCreationOptions(options));
       await postJSON("/api/passkey/verify", {
         sealed, label, credential: credentialToJSON(cred),
       });
-      window.location.reload();
-    } catch (err) { showError("passkey-error", err); }
+      const params = new URLSearchParams(location.search);
+      params.set("flash", "saved");
+      params.set("msg", "Passkey added.");
+      window.location.href = location.pathname + "?" + params.toString();
+    } catch (err) {
+      showError("passkey-error", err);
+      setButtonBusy(addPasskeyBtn, false);
+    }
   });
+}
+
+/* ---- provider: encrypted-secret fields (keep/clear/replace) ---- */
+const SECRET_SENTINEL = "__SA_SECRET_UNCHANGED__";
+function wireSecretField(inputId, changedId) {
+  const input = document.getElementById(inputId);
+  const changed = document.getElementById(changedId);
+  if (!input || !changed) return;
+  input.addEventListener("input", () => {
+    changed.value = (input.value !== SECRET_SENTINEL) ? "1" : "0";
+  });
+}
+wireSecretField("api-key-input", "api-key-changed");
+wireSecretField("pfx-password-input", "pfx-password-changed");
+
+/* ---- provider: PFX "remove certificate" checkbox disables the password field ---- */
+const mtlsClearCheckbox = document.getElementById("mtls-clear");
+const pfxPasswordInputEl = document.getElementById("pfx-password-input");
+if (mtlsClearCheckbox && pfxPasswordInputEl) {
+  const syncPfxPasswordDisabled = () => { pfxPasswordInputEl.disabled = mtlsClearCheckbox.checked; };
+  mtlsClearCheckbox.addEventListener("change", syncPfxPasswordDisabled);
+  syncPfxPasswordDisabled();
 }
 
 /* ---- provider: fetch available models ---- */
@@ -84,9 +156,10 @@ if (fetchModelsBtn) {
     const datalist = document.getElementById("model-list");
     const ptype = document.getElementById("ptype").value;
     const base_url = document.getElementById("base-url-input").value;
-    const api_key = document.getElementById("api-key-input").value;
+    const apiKeyRaw = document.getElementById("api-key-input").value;
+    const api_key = apiKeyRaw === SECRET_SENTINEL ? "" : apiKeyRaw;
     status.textContent = "Fetching…";
-    fetchModelsBtn.disabled = true;
+    setButtonBusy(fetchModelsBtn, true, "Fetching…");
     try {
       const { models } = await postJSON("/api/provider/models", { ptype, base_url, api_key });
       datalist.innerHTML = "";
@@ -100,8 +173,9 @@ if (fetchModelsBtn) {
         : "Provider returned no models";
     } catch (err) {
       status.textContent = "Fetch failed: " + (err.message || err);
+      showToast("Fetch failed: " + (err.message || err), "error");
     } finally {
-      fetchModelsBtn.disabled = false;
+      setButtonBusy(fetchModelsBtn, false);
     }
   });
 }
@@ -241,7 +315,7 @@ if (testBtn) {
     wrap.hidden = false;
     summary.innerHTML = '<p class="muted">Running test (connectivity check + sample e-mail analysis)…</p>';
     out.textContent = "";
-    testBtn.disabled = true;
+    setButtonBusy(testBtn, true, "Running test…");
     try {
       const result = await postJSON("/api/provider/test");
       summary.innerHTML = renderProviderTest(result);
@@ -249,7 +323,7 @@ if (testBtn) {
     } catch (err) {
       summary.innerHTML = `<p class="error">Test failed: ${escapeHtml(err.message || String(err))}</p>`;
     } finally {
-      testBtn.disabled = false;
+      setButtonBusy(testBtn, false);
     }
   });
 }
@@ -281,6 +355,8 @@ function renderMessageTest(result) {
 
   parts.push(`<div class="card">
     <h3>AI analysis</h3>
+    ${v.ai_verdict === "SKIPPED" ? `<p class="muted">AI analysis is disabled globally — enable it on the
+        <a href="/settings/ai">AI settings</a> page to get a verdict here. rspamd scoring below still applies.</p>` : `
     <p><span class="badge ${verdictBadgeClass(v.ai_verdict)}">${escapeHtml(v.ai_verdict || "?")}</span>
        ${Math.round((v.ai_confidence || 0) * 100)}% confidence</p>
     ${v.ai_category ? `<p><strong>Category:</strong> ${escapeHtml(v.ai_category)}</p>` : ""}
@@ -291,7 +367,7 @@ function renderMessageTest(result) {
       (v.tools_used && v.tools_used.length)
         ? v.tools_used.map((t) => `<span class="badge">${escapeHtml(t)}</span>`).join(" ")
         : '<span class="muted">none</span>'
-    }</p>
+    }</p>`}
   </div>`);
 
   parts.push(`<div class="card">
@@ -326,7 +402,7 @@ if (testMessageBtn) {
     wrap.hidden = false;
     summary.innerHTML = '<p class="muted">Running message through the pipeline (overrides → AI → rspamd)…</p>';
     out.textContent = "";
-    testMessageBtn.disabled = true;
+    setButtonBusy(testMessageBtn, true, "Running…");
     try {
       const resp = await fetch("/api/test/message", { method: "POST", body: new FormData(form) });
       const result = await resp.json();
@@ -336,7 +412,7 @@ if (testMessageBtn) {
     } catch (err) {
       summary.innerHTML = `<p class="error">Test failed: ${escapeHtml(err.message || String(err))}</p>`;
     } finally {
-      testMessageBtn.disabled = false;
+      setButtonBusy(testMessageBtn, false);
     }
   });
 }

@@ -51,3 +51,16 @@ details.trace summary { cursor: pointer; }
 .inline-form { display: flex; gap: .6rem; align-items: flex-start; flex-wrap: wrap;
                margin: .6rem 0; }
 .inline-form input, .inline-form textarea { width: auto; flex: 1; min-width: 180px; }
+.toast-container { position: fixed; right: 1rem; bottom: 1rem; display: flex;
+  flex-direction: column; gap: .5rem; z-index: 1000; }
+.toast { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--ok);
+  border-radius: 8px; padding: .6rem .9rem; box-shadow: 0 4px 14px rgba(0,0,0,.35);
+  max-width: 340px; opacity: 0; transform: translateY(6px); transition: opacity .2s, transform .2s;
+  cursor: pointer; }
+.toast.error { border-left-color: var(--danger); }
+.toast.show { opacity: 1; transform: translateY(0); }
+.spinner { display: inline-block; width: 1em; height: 1em; margin-right: .4em;
+  vertical-align: -0.15em; border: 2px solid currentColor; border-right-color: transparent;
+  border-radius: 50%; animation: sa-spin .6s linear infinite; }
+@keyframes sa-spin { to { transform: rotate(360deg); } }
+button.busy { cursor: progress; opacity: .85; }
