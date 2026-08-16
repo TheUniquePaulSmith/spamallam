@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Marking{% endblock %}
+{% block content %}
+<h1>SPAM marking</h1>
+<p class="muted">When a delivered message's AI verdict matches one of the triggers below, SpamAllam
+inserts a warning banner at the top of the body (converting plaintext to HTML so it renders), and
+can break remote images so tracking pixels never fire. This never touches S/MIME- or PGP-signed
+messages, and any rewrite failure silently falls back to delivering the message untouched.</p>
+<form method="post" action="/settings/marking" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+
+  <label class="row"><input type="checkbox" name="enabled"
+    {{ 'checked' if cfg.marking.enabled }}><span>Enable SPAM marking</span></label>
+
+  <h2>Trigger verdicts</h2>
+  {% for v in ['SPAM', 'PHISHING', 'MALICIOUS'] %}
+  <label class="row"><input type="checkbox" name="trigger_{{ v|lower }}"
+    {{ 'checked' if v in cfg.marking.trigger_verdicts }}><span>{{ v }}</span></label>
+  {% endfor %}
+
+  <h2>Banner</h2>
+  <label>Banner HTML template <span class="muted">(tokens: {verdict} {confidence} {category} {reason}
+    {model} — inserted right after &lt;body&gt;)</span>
+    <textarea name="banner_template" rows="6">{{ cfg.marking.banner_template }}</textarea></label>
+  <label class="row"><input type="checkbox" name="convert_plaintext_to_html"
+    {{ 'checked' if cfg.marking.convert_plaintext_to_html }}>
+    <span>Convert plain-text SPAM to HTML so the banner renders nicely (otherwise a plain-text
+    banner is prepended instead)</span></label>
+
+  <h2>Break remote images / tracking pixels</h2>
+  <p class="muted">Rewrites remote (http/https) &lt;img src&gt; and legacy background= attributes to
+  an inert placeholder. Embedded (cid:/data:) images are never touched.</p>
+  <label class="row"><input type="radio" name="break_images_scope" value="off"
+    {{ 'checked' if cfg.marking.break_images.scope == 'off' }}><span>Off</span></label>
+  <label class="row"><input type="radio" name="break_images_scope" value="spam_only"
+    {{ 'checked' if cfg.marking.break_images.scope == 'spam_only' }}>
+    <span>Spam-flagged mail only (same triggers as the banner above)</span></label>
+  <label class="row"><input type="radio" name="break_images_scope" value="all_mail"
+    {{ 'checked' if cfg.marking.break_images.scope == 'all_mail' }}><span>All delivered mail</span></label>
+
+  {% if is_admin %}<button class="primary">Save</button>{% endif %}
+</form>
+{% endblock %}

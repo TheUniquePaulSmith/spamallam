@@ -13,6 +13,7 @@ from typing import Any
 from ..config import ENV
 from ..store.settings import SETTINGS
 from ..store.tracelog import MessageTrace
+from . import body
 from . import headers as hdr
 from . import overrides as ovr
 from . import rspamd_client
@@ -142,6 +143,10 @@ class Pipeline:
             trace.finish(DROP, self._verdict_dict(verdict, rres, why))
             return Decision(DROP, reason=why), trace
 
+        # 6b. SPAM warning banner / plaintext->HTML / image breaking / classification
+        # footer -- only for mail that's actually delivered (fails open on any error).
+        tagged = body.rewrite(tagged, verdict, cfg, trace)
+
         # 7. Result headers for downstream mail rules (MailPlus etc.)
         result_headers: list[tuple[str, str]] = []
         if rres.ok:
@@ -176,6 +181,7 @@ class Pipeline:
             "ai_category": verdict.category,
             "ai_reason": verdict.reason,
             "model": verdict.model,
+            "labels": verdict.labels,
             "tools_used": verdict.tools_used,
             "whitelisted": verdict.whitelisted,
             "rspamd_action": rres.action if rres.ok else f"error: {rres.error}",

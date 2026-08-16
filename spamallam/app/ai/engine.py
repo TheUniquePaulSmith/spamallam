@@ -1,12 +1,14 @@
 """AI analysis engine: summarize -> provider tool-calling loop -> verdict."""
 from __future__ import annotations
 
+import copy
 import json
 import re
 from typing import Any
 
 from ..config import ENV
 from ..pipeline.headers import SpamallamVerdict
+from ..providers.base import VERDICT_TOOL
 from ..providers.factory import load_provider
 from ..store.secrets import SecretsBox
 from ..store.settings import SETTINGS
@@ -15,9 +17,36 @@ from .summarize import summarize
 
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 _VALID_VERDICTS = {"HAM", "SPAM", "PHISHING", "MALICIOUS"}
+_MAX_LABELS = 3
 
 
-def parse_verdict(text: str, model_label: str, tools_used: list[str]) -> SpamallamVerdict:
+def build_verdict_tool(classification_cfg: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Return (tool_schema, enabled_label_keys). Adds an optional 'labels' field
+    to the standard verdict tool, enum'd from admin-configured classification
+    labels, when classification is enabled and at least one label is enabled."""
+    if not classification_cfg.get("enabled"):
+        return VERDICT_TOOL, []
+    labels = [l for l in classification_cfg.get("labels", []) if l.get("enabled")]
+    if not labels:
+        return VERDICT_TOOL, []
+    tool = copy.deepcopy(VERDICT_TOOL)
+    keys = [l["key"] for l in labels]
+    descriptions = "; ".join(f"{l['key']} = {l.get('name', l['key'])}: {l.get('description', '')}"
+                              for l in labels)
+    tool["parameters"]["properties"]["labels"] = {
+        "type": "array",
+        "items": {"type": "string", "enum": keys},
+        "description": (
+            "Optional classification labels for this e-mail (0 to "
+            f"{_MAX_LABELS}), independent of the spam verdict. Choose from: "
+            f"{descriptions}"
+        ),
+    }
+    return tool, keys
+
+
+def parse_verdict(text: str, model_label: str, tools_used: list[str],
+                   valid_labels: list[str] | None = None) -> SpamallamVerdict:
     match = _JSON_RE.search(text or "")
     if not match:
         raise ValueError(f"provider returned no JSON verdict: {text[:200]!r}")
@@ -26,6 +55,17 @@ def parse_verdict(text: str, model_label: str, tools_used: list[str]) -> Spamall
     if verdict not in _VALID_VERDICTS:
         raise ValueError(f"provider returned invalid verdict {verdict!r}")
     confidence = max(0.0, min(1.0, float(data.get("confidence", 0.0))))
+    valid_labels = set(valid_labels or [])
+    raw_labels = data.get("labels", []) if isinstance(data.get("labels"), list) else []
+    seen: set[str] = set()
+    labels: list[str] = []
+    for l in raw_labels:
+        l = str(l)
+        if l in valid_labels and l not in seen:
+            seen.add(l)
+            labels.append(l)
+        if len(labels) >= _MAX_LABELS:
+            break
     return SpamallamVerdict(
         verdict=verdict,
         confidence=confidence,
@@ -33,6 +73,7 @@ def parse_verdict(text: str, model_label: str, tools_used: list[str]) -> Spamall
         reason=str(data.get("reason", ""))[:500],
         model=model_label,
         tools_used=tools_used,
+        labels=labels,
     )
 
 
@@ -53,6 +94,7 @@ async def analyze_message(
     user = build_user_message(summary, cfg["context"])
     tools = registry.tool_definitions(cfg)
     tools_used: list[str] = []
+    verdict_tool, valid_labels = build_verdict_tool(cfg.get("classification", {}))
 
     async def execute_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         tools_used.append(name)
@@ -65,8 +107,9 @@ async def analyze_message(
         execute_tool,
         recorder,
         log_prompts=bool(cfg["logging"].get("log_prompts", True)),
+        verdict_tool=verdict_tool,
     )
-    return parse_verdict(text, provider.label, sorted(set(tools_used)))
+    return parse_verdict(text, provider.label, sorted(set(tools_used)), valid_labels)
 
 
 class ListRecorder:

@@ -48,6 +48,9 @@ _HTML_ERROR_REDIRECT = {
     "/settings/context/recipient": "/settings/context",
     "/settings/tools": "/settings/tools",
     "/settings/overrides": "/settings/overrides",
+    "/settings/marking": "/settings/marking",
+    "/settings/classification": "/settings/classification",
+    "/settings/classification/label": "/settings/classification",
     "/settings/logging": "/logs",
     "/users/invite": "/users",
     "/users/delete": "/users",
@@ -437,6 +440,87 @@ def create_app() -> FastAPI:
         })
         audit.record_changes(username, changes)
         return RedirectResponse(_flash_url("/settings/overrides", "saved", "Saved."), status_code=303)
+
+    # ------------------------------------------------------- settings: marking
+    @app.get("/settings/marking", response_class=HTMLResponse)
+    async def marking_page(request: Request):
+        username = security.require_user(request)
+        return render(request, "marking.html", username, cfg=SETTINGS.all())
+
+    @app.post("/settings/marking")
+    async def marking_save(request: Request, csrf: str = Form(...),
+                           enabled: str = Form(""),
+                           trigger_spam: str = Form(""),
+                           trigger_phishing: str = Form(""),
+                           trigger_malicious: str = Form(""),
+                           banner_template: str = Form(""),
+                           convert_plaintext_to_html: str = Form(""),
+                           break_images_scope: str = Form("off")):
+        username = security.require_admin(request)
+        security.check_csrf(username, csrf)
+
+        triggers = []
+        if trigger_spam == "on":
+            triggers.append("SPAM")
+        if trigger_phishing == "on":
+            triggers.append("PHISHING")
+        if trigger_malicious == "on":
+            triggers.append("MALICIOUS")
+        if break_images_scope not in ("off", "spam_only", "all_mail"):
+            break_images_scope = "off"
+
+        changes = SETTINGS.update({
+            "marking.enabled": enabled == "on",
+            "marking.trigger_verdicts": triggers,
+            "marking.banner_template": banner_template,
+            "marking.convert_plaintext_to_html": convert_plaintext_to_html == "on",
+            "marking.break_images.scope": break_images_scope,
+        })
+        audit.record_changes(username, changes)
+        return RedirectResponse(_flash_url("/settings/marking", "saved", "Saved."), status_code=303)
+
+    # ------------------------------------------------ settings: classification
+    @app.get("/settings/classification", response_class=HTMLResponse)
+    async def classification_page(request: Request):
+        username = security.require_user(request)
+        return render(request, "classification.html", username, cfg=SETTINGS.all())
+
+    @app.post("/settings/classification")
+    async def classification_save(request: Request, csrf: str = Form(...),
+                                  enabled: str = Form(""), placement: str = Form("header")):
+        username = security.require_admin(request)
+        security.check_csrf(username, csrf)
+        if placement not in ("header", "footer", "both"):
+            placement = "header"
+        changes = SETTINGS.update({
+            "classification.enabled": enabled == "on",
+            "classification.placement": placement,
+        })
+        audit.record_changes(username, changes)
+        return RedirectResponse(_flash_url("/settings/classification", "saved", "Saved."), status_code=303)
+
+    @app.post("/settings/classification/label")
+    async def classification_label(request: Request, csrf: str = Form(...),
+                                   key: str = Form(...), name: str = Form(""),
+                                   description: str = Form(""), label_enabled: str = Form(""),
+                                   delete: str = Form("")):
+        username = security.require_admin(request)
+        security.check_csrf(username, csrf)
+        key = key.strip().lower()
+        labels = [dict(l) for l in SETTINGS.get("classification.labels", [])]
+        labels = [l for l in labels if l["key"] != key]
+        if delete != "on" and key:
+            labels.append({
+                "key": key,
+                "name": name.strip() or key,
+                "description": description.strip(),
+                "enabled": label_enabled == "on",
+            })
+        labels.sort(key=lambda l: l["key"])
+        changes = SETTINGS.update({"classification.labels": labels})
+        audit.record_changes(username, changes)
+        msg = "Label removed." if delete == "on" else "Label saved."
+        return RedirectResponse(_flash_url("/settings/classification", "saved", msg), status_code=303)
 
     # -------------------------------------------------------------- test message
     @app.get("/test", response_class=HTMLResponse)
