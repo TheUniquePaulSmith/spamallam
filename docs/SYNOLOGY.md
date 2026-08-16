@@ -6,15 +6,67 @@ with **no privileged ports** anywhere.
 
 ## 1. Port plan
 
-The stack never binds a port below 1024, so it coexists with DSM services:
+The stack never binds a port below 1024, so it coexists with DSM services.
+postfix is the one exception to "reached via the docker host": it's dual-homed
+onto a macvlan network (`mailwan`) and gets its own LAN IP
+(`POSTFIX_MACVLAN_IP`) so inbound connections arrive with their real source
+IP instead of being NAT-rewritten by Docker's port-publish path — see
+[SECURITY.md](SECURITY.md) for why that matters (a rewritten source IP can
+fall inside `mynetworks` and turn `permit_mynetworks` into an open relay).
 
-| Port | Owner | Purpose |
-|---|---|---|
-| 2525 | spamallam-postfix | inbound SMTP (WAN :25 forwarded here) |
-| 2587 | spamallam-postfix | inbound STARTTLS-enforced (WAN :587 forwarded here, optional) |
-| 2526 (example) | MailPlus | internal delivery port (`MAILSERVER_PORT`) |
-| 8443 | spamallam admin UI | loopback/LAN only |
-| 11334 | rspamd web UI | loopback/LAN only |
+| Port | Owner | Reachable at | Purpose |
+|---|---|---|---|
+| 2525 | spamallam-postfix | `POSTFIX_MACVLAN_IP` (WAN :25 forwarded here) | inbound SMTP |
+| 2587 | spamallam-postfix | `POSTFIX_MACVLAN_IP` (WAN :587 forwarded here, optional) | inbound STARTTLS-enforced |
+| 2526 (example) | MailPlus | NAS LAN IP | internal delivery port (`MAILSERVER_PORT`) |
+| 8443 | spamallam admin UI | docker host, loopback/LAN only | admin UI |
+| 11334 | rspamd web UI | docker host, loopback/LAN only | rspamd controller |
+
+### Set up the macvlan network
+
+Set in `.env`:
+
+- `MACVLAN_PARENT` — the NIC this stack's mail traffic actually uses (check
+  with `ip -o link show` over SSH, or DSM Network Center).
+- `MACVLAN_SUBNET` / `MACVLAN_GATEWAY` — the LAN/VLAN postfix's address lives
+  on.
+- `POSTFIX_MACVLAN_IP` — a free address on that subnet you pick yourself
+  (Docker's macvlan IPAM assigns it statically from `docker-compose.yml`; it
+  does not request a lease from your router's DHCP server). Exclude it from
+  DSM's/your router's DHCP pool, or reserve it, so nothing else is ever handed
+  the same address.
+
+### Verify the macvlan default route (required, every deploy)
+
+postfix's outbound default route must go via `MACVLAN_GATEWAY`, or replies to
+an inbound connection leave via a different gateway than they arrived on —
+the exact asymmetric-routing condition that let mxtoolbox report an open
+relay in the first place. Docker itself doesn't offer a reliable way to pin
+this on older Engine/Compose: neither the Compose `gw_priority` schema field
+nor the `docker network connect --gw-priority` CLI flag exist prior to fairly
+recent releases (Compose rejects the former outright at validation:
+`Additional property gw_priority is not allowed`; check yours with
+`docker network connect --help`). So `postfix/entrypoint.sh` sets the route
+itself at container startup with `ip route replace default via
+$MACVLAN_GATEWAY dev <iface>` (the container is granted `NET_ADMIN` for
+exactly this, see `docker-compose.yml`) — Docker's own default-gateway
+selection is never relied on.
+
+Confirm it took effect after every deploy:
+
+```bash
+docker exec spamallam-postfix ip route
+```
+
+The `default` line must go via `MACVLAN_GATEWAY` (your mail LAN's router), not
+the `mailnet` bridge gateway (`DOCKER_SUBNET`'s `.1`). It should always be
+correct — the entrypoint fails the container outright (check `docker logs
+spamallam-postfix`) if it can't find an interface holding
+`POSTFIX_MACVLAN_IP`. A wrong-but-running result would mean something
+replaced or skipped the entrypoint (e.g. a custom `command:`/`entrypoint:`
+override) — mail may still flow either way (postscreen/DNSBL and the relay
+hop to `MAILSERVER_HOST` work regardless, since `MAILSERVER_HOST` is
+on-link), so this won't fail loudly on its own; don't skip the check.
 
 ### Move MailPlus off :25
 
@@ -28,9 +80,15 @@ itself — SpamAllam is inbound-only by design.
 
 ### Trust the gateway as an internal relay
 
-MailPlus must accept mail for your domains from the docker subnet
-(default `172.28.0.0/24`, i.e. the NAS itself when using bridge networking —
-connections will appear to come from the NAS/docker bridge IP):
+Now that postfix's outbound relay hop rides the macvlan network's default
+route (see above), MailPlus sees the relay connection arriving **from
+`POSTFIX_MACVLAN_IP`** directly — not from the docker bridge subnet or a
+NAS-NATed address as with plain bridge networking. If `MAILSERVER_HOST` is on
+the same `MACVLAN_SUBNET` as postfix (as it is when MailPlus and
+`POSTFIX_MACVLAN_IP` both live on a dedicated mail VLAN), this connection is
+on-link — no gateway hop, no NAT.
+
+MailPlus must accept mail for your domains from `POSTFIX_MACVLAN_IP`:
 
 - MailPlus Server → **Security** → make sure the NAS/docker source is not
   greylisted/rate-limited.

@@ -2,8 +2,16 @@
 #
 # Internet :25 --(gateway port-forward)--> postfix:2525 -> spamallam (AI) -> rspamd -> internal mail server
 #
-# No privileged ports are used anywhere in this stack. Configure your firewall /
-# gateway (e.g. UniFi) to forward WAN :25 -> <docker-host>:${SMTP_PORT}.
+# No privileged ports are used anywhere in this stack. postfix is dual-homed:
+#   - mailnet: internal docker bridge, used only to reach spamallam/rspamd.
+#   - mailwan: macvlan on the dedicated mail LAN, giving postfix its own real
+#     IP/MAC. Docker's normal port-publish path (NAT/docker-proxy) can rewrite
+#     the client's source IP to the docker bridge gateway address, which then
+#     falls inside `mynetworks` and turns permit_mynetworks into an accidental
+#     open relay — macvlan avoids that translation entirely. See docs/SECURITY.md.
+#
+# Configure your gateway (e.g. UniFi) to forward WAN :25 -> ${POSTFIX_MACVLAN_IP}:2525
+# (and WAN :587 -> ${POSTFIX_MACVLAN_IP}:2587 if enabled) — NOT at the docker host.
 #
 # All tunables live in .env — see .env.example for documentation of every knob.
 
@@ -16,6 +24,17 @@ networks:
       config:
         # Fixed subnet so postfix can scope mynetworks to exactly this network
         - subnet: ${DOCKER_SUBNET:-172.28.0.0/24}
+
+  mailwan:
+    # Direct-LAN network for postfix only, so inbound SMTP arrives with the
+    # real client source IP instead of a NAT/proxy-rewritten one.
+    driver: macvlan
+    driver_opts:
+      parent: ${MACVLAN_PARENT:?set MACVLAN_PARENT in .env}
+    ipam:
+      config:
+        - subnet: ${MACVLAN_SUBNET:?set MACVLAN_SUBNET in .env}
+          gateway: ${MACVLAN_GATEWAY:?set MACVLAN_GATEWAY in .env}
 
 volumes:
   postfix-spool:      # postfix queue (survives restarts so queued mail is not lost)
@@ -32,17 +51,28 @@ services:
     container_name: spamallam-postfix
     hostname: ${MAIL_HOSTNAME:?set MAIL_HOSTNAME in .env}
     restart: unless-stopped
-    networks: [mailnet]
-    ports:
-      # Inbound SMTP (forward WAN :25 here). Never below 1024.
-      - "${SMTP_PORT:-2525}:2525"
-      # STARTTLS-enforced inbound listener (forward WAN :587 here if desired).
-      - "${SMTP_TLS_PORT:-2587}:2587"
+    # Replies to an inbound SMTP connection that arrived on POSTFIX_MACVLAN_IP
+    # must leave via MACVLAN_GATEWAY, or they take whatever network Docker
+    # picked as the default route instead — the asymmetric-routing/open-relay
+    # bug this network was added to fix in the first place. Neither this
+    # Compose version's schema (`gw_priority`) nor this Engine's CLI
+    # (`docker network connect --gw-priority`) can declare that, so
+    # postfix/entrypoint.sh sets the default route explicitly at startup
+    # (needs NET_ADMIN, added below). See "Verify the macvlan default route"
+    # in docs/SYNOLOGY.md.
+    networks:
+      mailwan:
+        ipv4_address: ${POSTFIX_MACVLAN_IP:?set POSTFIX_MACVLAN_IP in .env}
+      mailnet: {}
+    # No `ports:` — postfix listens on :2525/:2587 (postfix/templates/master.cf.tmpl)
+    # directly on POSTFIX_MACVLAN_IP; nothing to publish/NAT via the docker host.
     environment:
       MAIL_HOSTNAME: ${MAIL_HOSTNAME}
       MAIL_DOMAINS: ${MAIL_DOMAINS:?set MAIL_DOMAINS in .env}
       MAILSERVER_HOST: ${MAILSERVER_HOST:?set MAILSERVER_HOST in .env}
       MAILSERVER_PORT: ${MAILSERVER_PORT:-25}
+      POSTFIX_MACVLAN_IP: ${POSTFIX_MACVLAN_IP}
+      MACVLAN_GATEWAY: ${MACVLAN_GATEWAY:?set MACVLAN_GATEWAY in .env}
       RECIPIENT_VALIDATION: ${RECIPIENT_VALIDATION:-domain}
       RELAY_RECIPIENTS: ${RELAY_RECIPIENTS:-}
       ENABLE_STARTTLS_PORT: ${ENABLE_STARTTLS_PORT:-true}
@@ -59,8 +89,10 @@ services:
       - certs:/certs:ro
     cap_drop: [ALL]
     # postfix master needs these to run its privilege-separated architecture and
-    # manage the queue; deliberately NO network capabilities (no ports < 1024).
-    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, KILL, SETGID, SETUID]
+    # manage the queue; no capability grants ports < 1024. NET_ADMIN is for the
+    # one-time default-route fixup in entrypoint.sh (see networks: comment
+    # above) — not used by postfix itself.
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, KILL, SETGID, SETUID, NET_ADMIN]
     security_opt:
       - no-new-privileges:true
     depends_on:

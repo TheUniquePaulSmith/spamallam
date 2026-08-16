@@ -10,8 +10,21 @@ UniFi Network → Settings → **Port Forwarding**:
 
 | Name | WAN port | Forward IP | Forward port |
 |---|---|---|---|
-| smtp-inbound | 25 | docker host / NAS IP | 2525 |
-| smtp-starttls (optional) | 587 | docker host / NAS IP | 2587 |
+| smtp-inbound | 25 | `POSTFIX_MACVLAN_IP` (from `.env`) | 2525 |
+| smtp-starttls (optional) | 587 | `POSTFIX_MACVLAN_IP` | 2587 |
+
+Forward to postfix's own macvlan address, **not** the docker host / NAS IP.
+postfix is dual-homed onto a dedicated mail LAN (`mailwan` in
+`docker-compose.yml`) specifically so it gets a real, un-NATed IP here —
+forwarding to the NAS IP instead would route through Docker's port-publish
+path again and reintroduce the source-IP-rewrite/open-relay issue this setup
+avoids (see [SECURITY.md](SECURITY.md)).
+
+If your mail LAN (`MACVLAN_SUBNET`) is its own VLAN, also confirm UniFi's
+inter-VLAN/firewall rules let WAN-forwarded traffic reach it, and that the
+gateway you set as `MACVLAN_GATEWAY` gives that VLAN normal outbound routing
+(postfix's DNSBL lookups and its relay hop to `MAILSERVER_HOST` both egress
+via this network — see the `gw_priority` note in `docker-compose.yml`).
 
 Do **not** forward 8443 (admin UI) or 11334 (rspamd UI) — those are LAN-only.
 

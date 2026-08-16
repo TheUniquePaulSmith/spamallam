@@ -18,6 +18,27 @@ container may eventually be compromised. Goals, in order:
 - Relay policy: `permit_mynetworks, reject_unauth_destination` with
   `mynetworks` = loopback + the stack's fixed docker subnet only. Mail is
   accepted solely *for* `MAIL_DOMAINS`.
+- **Direct-LAN exposure, not port-publish NAT**: postfix is dual-homed onto a
+  macvlan network (`mailwan`) and reached at its own `POSTFIX_MACVLAN_IP`,
+  instead of via Docker's normal `ports:` publish path. This isn't cosmetic —
+  some Docker hosts (Synology Container Manager included) rewrite an inbound
+  connection's source IP to the docker bridge gateway address before the
+  container ever sees it. That address falls *inside* `mynetworks`, which
+  turns the first line of every restriction list above
+  (`permit_mynetworks`) into an unconditional pass for any internet sender,
+  i.e. an open relay that `reject_unauth_destination` never gets a chance to
+  enforce. macvlan means postfix sees the real client IP on every connection,
+  so `mynetworks` can only ever match genuinely internal traffic.
+- **Default-route fixup**: replies to an inbound macvlan connection must leave
+  via the macvlan gateway, or they're routed out the internal bridge instead —
+  reintroducing the exact asymmetric-routing condition macvlan exists to
+  avoid. Older Docker Engine/Compose builds have no declarative way to pin
+  this (no `gw_priority` schema support, no `network connect --gw-priority`
+  CLI), so `postfix/entrypoint.sh` sets the default route explicitly at
+  startup via `ip route replace`, using a targeted `NET_ADMIN` grant — the one
+  exception to "no network capabilities" below. It runs once, before postfix
+  starts, is not used by postfix itself, and its only effect is that one
+  route replacement.
 - postscreen with weighted DNSBLs drops bots before a smtpd process is spent.
 - `reject_unauth_pipelining`, FQDN + resolvable HELO required, strict RFC821
   envelopes, VRFY disabled, junk-command limit (default 50), per-client
@@ -28,7 +49,8 @@ container may eventually be compromised. Goals, in order:
   modes); DROP verdicts are silent discards; `notify_classes` is empty and
   bounce lifetime short — no backscatter.
 - Container: unprivileged ports only, `cap_drop: ALL` plus only the setuid/file
-  caps postfix's privilege-separated design needs, `no-new-privileges`.
+  caps postfix's privilege-separated design needs and the one `NET_ADMIN`
+  grant described above, `no-new-privileges`.
 
 ## Header trust chain
 
@@ -94,18 +116,32 @@ container may eventually be compromised. Goals, in order:
 
 | Service | user | caps | rootfs |
 |---|---|---|---|
-| postfix | root→postfix (priv-sep) | CHOWN, DAC_OVERRIDE, FOWNER, KILL, SETGID, SETUID | rw (spool) |
+| postfix | root→postfix (priv-sep) | CHOWN, DAC_OVERRIDE, FOWNER, KILL, SETGID, SETUID, NET_ADMIN | rw (spool) |
 | spamallam | uid 1000 | none | read-only + /data + tmpfs |
 | rspamd | root→_rspamd | CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID | rw |
 | redis / clamav | image defaults | none added | rw (data volumes) |
 | acme | root | CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID | rw |
 
-All services: `no-new-privileges: true`, single internal bridge network, only
-postfix's SMTP ports published beyond loopback by default. The certs volume is
-writable by acme alone. No container mounts docker.sock.
+All services: `no-new-privileges: true`, on the internal `mailnet` bridge; only
+postfix is additionally dual-homed onto the direct-LAN `mailwan` macvlan
+network (see above) — every other service's ports, if published at all, stay
+loopback/LAN-only. The certs volume is writable by acme alone. No container
+mounts docker.sock.
 
 ## Residual risks / operator notes
 
+- The macvlan fix depends on postfix's default route actually going out via
+  `MACVLAN_GATEWAY`, so replies to an inbound connection leave via the same
+  gateway they arrived on. `postfix/entrypoint.sh` sets this explicitly with
+  `ip route replace` at startup (see above) rather than relying on Docker's
+  own default-gateway selection, since neither this stack's target Compose
+  versions nor older Engine releases (no `gw_priority` schema support, no
+  `network connect --gw-priority`) offer a declarative way to pin it. If that
+  entrypoint step ever fails silently or gets bypassed (e.g. a custom
+  entrypoint override), verify with `docker exec spamallam-postfix ip route`
+  after every deploy — a wrong default route silently reopens the
+  asymmetric-routing/relay issue this network was added to fix. See "Verify
+  the macvlan default route" in [SYNOLOGY.md](SYNOLOGY.md).
 - rspamd's controller UI (:11334) is password-protected but plain HTTP — keep
   it loopback/LAN and treat the password as low-value.
 - `verify` recipient mode probes the internal server; keep it in `domain` mode
