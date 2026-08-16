@@ -118,8 +118,9 @@ def test_system_prompt_default_and_override():
 def test_default_system_prompt_covers_core_doctrine():
     from app.ai.prompt import DEFAULT_SYSTEM_PROMPT as p
 
-    # verdicts + output contract
-    for token in ("HAM", "SPAM", "PHISHING", "MALICIOUS", '"verdict"', '"confidence"'):
+    # verdicts + output contract (verdict is submitted via the submit_verdict
+    # tool call, not written as raw JSON text — see providers/base.py VERDICT_TOOL)
+    for token in ("HAM", "SPAM", "PHISHING", "MALICIOUS", "submit_verdict"):
         assert token in p
     # safety rules: no message-link fetching, prompt-injection resistance
     assert "NEVER fetch" in p

@@ -106,10 +106,10 @@ Confidence is YOUR certainty in the verdict, 0.0-1.0:
             IS SILENTLY DROPPED. Reserve it for cases where a false positive is inconceivable.
 
 === 7. OUTPUT ===
-When your analysis is complete, answer with ONLY this JSON object, no other text:
-{"verdict": "HAM|SPAM|PHISHING|MALICIOUS", "confidence": 0.0-1.0,
- "category": "<short label, e.g. 'credential phishing', 'newsletter', 'BEC gift-card', 'cold B2B'>",
- "reason": "<one or two sentences citing the concrete evidence that decided the verdict>"}
+When — and only when — your investigation is complete, call the submit_verdict tool with
+your verdict, confidence, category, and reason. Call it ALONE: never in the same turn as
+any other tool. If you still need another tool's result, call that tool by itself first,
+review what it returns, and call submit_verdict only once nothing else is left to check.
 """
 
 
