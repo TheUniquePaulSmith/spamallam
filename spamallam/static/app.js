@@ -363,6 +363,9 @@ function renderMessageTest(result) {
     ${v.ai_reason ? `<p><strong>Reason:</strong> ${escapeHtml(v.ai_reason)}</p>` : ""}
     ${v.whitelisted ? `<p><strong>Whitelisted:</strong> ${escapeHtml(v.whitelisted)}</p>` : ""}
     ${v.model ? `<p><strong>Model:</strong> <span class="mono">${escapeHtml(v.model)}</span></p>` : ""}
+    ${(v.labels && v.labels.length) ? `<p><strong>Classification:</strong> ${
+      v.labels.map((l) => `<span class="badge">${escapeHtml(l)}</span>`).join(" ")
+    }</p>` : ""}
     <p><strong>Tools used:</strong> ${
       (v.tools_used && v.tools_used.length)
         ? v.tools_used.map((t) => `<span class="badge">${escapeHtml(t)}</span>`).join(" ")

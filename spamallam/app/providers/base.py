@@ -120,8 +120,9 @@ class BaseProvider(abc.ABC):
         recorder: Recorder,
         max_iterations: int = 8,
         log_prompts: bool = True,
+        verdict_tool: dict[str, Any] | None = None,
     ) -> str:
-        tools = [*tools, VERDICT_TOOL]
+        tools = [*tools, verdict_tool or VERDICT_TOOL]
         messages = self._initial_messages(system, user)
         recorder.event(
             "ai_request", provider=self.label,

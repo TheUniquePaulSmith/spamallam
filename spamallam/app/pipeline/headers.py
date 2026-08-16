@@ -70,6 +70,7 @@ class SpamallamVerdict:
     model: str = ""
     tools_used: list[str] = field(default_factory=list)
     whitelisted: str = ""          # e.g. "yes; rule=domain:example.com"
+    labels: list[str] = field(default_factory=list)  # classification, e.g. ["newsletter"]
 
 
 def _canonical(verdict: SpamallamVerdict, ts: int) -> bytes:
@@ -114,6 +115,10 @@ def build_spamallam_headers(verdict: SpamallamVerdict, hmac_key: bytes) -> list[
         headers.append(("X-SpamAllam-Tools", _fold(", ".join(verdict.tools_used))))
     if verdict.whitelisted:
         headers.append(("X-SpamAllam-Whitelisted", _fold(verdict.whitelisted)))
+    if verdict.labels:
+        # Informational only (not part of the HMAC canonical string / rspamd
+        # scoring contract) — used for MailPlus filter rules, not trust decisions.
+        headers.append(("X-SpamAllam-Labels", _fold(", ".join(verdict.labels))))
     headers.append(("X-SpamAllam-Signature", sign(verdict, hmac_key)))
     return headers
 

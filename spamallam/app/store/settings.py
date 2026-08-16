@@ -86,6 +86,64 @@ DEFAULTS: dict[str, Any] = {
         "whitelist_recipients": [],
         "blocklist_domains": [],
     },
+    "marking": {
+        "enabled": False,
+        # Which AI verdicts (see SpamallamVerdict.verdict) trigger the banner /
+        # image-breaking below. Never fires for DROP'd mail (nobody sees it).
+        "trigger_verdicts": ["SPAM", "PHISHING", "MALICIOUS"],
+        # HTML inserted right after <body> (or prepended if no <body> tag).
+        # Tokens: {verdict} {confidence} {category} {reason} {model}
+        "banner_template": (
+            '<div style="border:2px solid #c0392b;background:#fdecea;'
+            'color:#7b241c;padding:12px 16px;margin:0 0 16px 0;'
+            'font-family:Arial,Helvetica,sans-serif;font-size:14px;'
+            'line-height:1.5;border-radius:4px;">'
+            '<strong style="font-size:15px;">⚠ SpamAllam flagged this '
+            'message as {verdict}</strong><br>'
+            'Category: {category} &middot; Confidence: {confidence}<br>'
+            'Reason: {reason}<br>'
+            '<span style="font-size:12px;color:#a04000;">Analyzed by '
+            '{model}</span></div>'
+        ),
+        # When a triggering message is plain text, convert it to HTML so the
+        # banner renders; if False, a plain-text banner is prepended instead.
+        "convert_plaintext_to_html": True,
+        "break_images": {
+            "scope": "off",   # off | spam_only | all_mail
+        },
+    },
+    "classification": {
+        "enabled": False,
+        # header | footer | both. Synology MailPlus's filter-rule builder can
+        # only match From/To/Subject/Keyword/Size (no header matching), so
+        # "footer" (a [[spamallam:key]] tag in the body, matched via a
+        # Keyword rule) is what MailPlus admins actually need; header is kept
+        # for other tooling/visibility.
+        "placement": "both",
+        "labels": [
+            {"key": "newsletter", "name": "Newsletter",
+             "description": "Recurring editorial/content newsletter the recipient opted into.",
+             "enabled": True},
+            {"key": "marketing", "name": "Marketing / Promotional",
+             "description": "Sales offers, discounts, product promotion.",
+             "enabled": True},
+            {"key": "transactional", "name": "Transactional / Receipt",
+             "description": "Order confirmations, receipts, invoices, shipping updates.",
+             "enabled": True},
+            {"key": "notification", "name": "Notification / Alert",
+             "description": "Automated status alerts from services/apps (not marketing).",
+             "enabled": True},
+            {"key": "social", "name": "Social",
+             "description": "Social network activity notifications (mentions, follows, likes).",
+             "enabled": True},
+            {"key": "personal", "name": "Personal",
+             "description": "One-to-one correspondence from an individual, not automated.",
+             "enabled": True},
+            {"key": "automated", "name": "Automated / No-Reply",
+             "description": "System-generated mail not covered by the other categories.",
+             "enabled": True},
+        ],
+    },
     "logging": {
         "retention_days": 30,
         "log_prompts": True,     # include full prompt/response text in traces
