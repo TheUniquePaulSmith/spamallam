@@ -151,6 +151,14 @@ mounts docker.sock.
   this last hop, then queues forever as `Host is unreachable` — nothing about
   it fails loudly earlier. Use the `mailnet` docker bridge gateway IP instead;
   see the `MAILSERVER_HOST` guidance in [SYNOLOGY.md](SYNOLOGY.md).
+- **MailPlus hostname collision**: postfix's built-in relay-loop guard bounces
+  (`mail for <host> loops back to myself`) if `MAILSERVER_HOST`'s own
+  EHLO/HELO response matches `MAIL_HOSTNAME` — common on the reference
+  deployment if MailPlus was the direct port-25 answerer under that hostname
+  before this stack existed. Same failure signature as the macvlan issue
+  above (accepted/scanned/reinjected, then bounced at the last hop), different
+  cause. Give MailPlus its own distinct hostname; see "Give MailPlus a
+  different hostname" in [SYNOLOGY.md](SYNOLOGY.md).
 - rspamd's controller UI (:11334) is password-protected but plain HTTP — keep
   it loopback/LAN and treat the password as low-value.
 - `verify` recipient mode probes the internal server; keep it in `domain` mode

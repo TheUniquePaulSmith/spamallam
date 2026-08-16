@@ -95,6 +95,33 @@ interface rather than all of them), set `MAILSERVER_HOST` to that gateway IP
 > If MailPlus is on a genuinely different physical host, its normal LAN IP is
 > correct as-is — this restriction only applies when it's the same box.
 
+### Give MailPlus a different hostname than `MAIL_HOSTNAME`
+
+Postfix refuses to relay to a server whose EHLO/HELO response hostname
+matches its own `$myhostname` (`MAIL_HOSTNAME`) — a built-in, non-configurable
+loop guard, since a match normally means "this relay hop points back at
+myself." Before this stack existed, MailPlus was likely the thing directly
+answering port 25 under your public mail hostname (e.g.
+`mail.fractalengine.com`), and that identity often survives the port move
+unless changed explicitly. The symptom is mail accepted, scanned, and
+reinjected successfully, then bounced at the very last hop:
+
+```
+warning: host <MAILSERVER_HOST>:<port> greeted me with my own hostname <MAIL_HOSTNAME>
+status=bounced (mail for <MAILSERVER_HOST>:<port> loops back to myself)
+```
+
+Fix: **MailPlus Server → General → Hostname (FQDN)** — set it to anything
+*other* than `MAIL_HOSTNAME`, e.g. `mail-internal.<yourdomain>`. It only needs
+to be unique for this internal EHLO handshake between postfix and MailPlus on
+the private mail network — it doesn't need to resolve publicly or match any
+DNS record. After changing it, flush any mail stuck from before the fix:
+
+```bash
+docker exec spamallam-postfix postqueue -f
+docker exec spamallam-postfix mailq
+```
+
 ### Trust the gateway as an internal relay
 
 Because the relay hop targets the `mailnet` bridge gateway rather than going
