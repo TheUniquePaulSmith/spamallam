@@ -31,19 +31,11 @@ Body text here."></textarea></label>
   <button id="test-message-btn" class="primary" type="button">Run through pipeline</button>
 </form>
 
-<div id="test-message-summary" class="card" hidden>
-  <h2>Overall</h2>
-  <table>
-    <tr><th>Decision</th><td id="tm-action"></td></tr>
-    <tr><th>Reason</th><td id="tm-reason"></td></tr>
-    <tr><th>AI verdict</th><td id="tm-ai-verdict"></td></tr>
-    <tr><th>rspamd action</th><td id="tm-rspamd-action"></td></tr>
-    <tr><th>rspamd score</th><td id="tm-rspamd-score"></td></tr>
-  </table>
-</div>
-
-<div class="card">
-  <h2>Full technical trace</h2>
+<div id="test-message-result" hidden>
+  <div id="test-message-summary"></div>
+  <p><button type="button" id="test-message-toggle-raw" class="small">Show raw JSON</button></p>
   <pre id="test-message-output" class="log" hidden></pre>
 </div>
+
+<script src="/static/rspamd-symbols.js"></script>
 {% endblock %}
