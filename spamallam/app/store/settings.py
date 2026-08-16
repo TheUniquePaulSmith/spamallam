@@ -24,6 +24,11 @@ DEFAULTS: dict[str, Any] = {
         # or above this confidence
         "drop_threshold": 0.95,
         "drop_verdicts": ["MALICIOUS", "PHISHING"],
+        # Max seconds for a full analysis (all tool-calling rounds included)
+        # before the configured failure_mode takes over. null = use the
+        # AI_TIMEOUT_SECONDS environment default (container restart required
+        # to change that; this setting takes effect immediately instead).
+        "timeout_seconds": None,
         # Custom system prompt for the analysis LLM; empty = use the built-in
         # default (app.ai.prompt.DEFAULT_SYSTEM_PROMPT)
         "system_prompt": "",

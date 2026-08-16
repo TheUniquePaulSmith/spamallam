@@ -26,6 +26,16 @@
   <label>Confidence (0.5–1.0)
     <input type="number" name="drop_threshold" step="0.01" min="0.5" max="1"
            value="{{ cfg.ai.drop_threshold }}"></label>
+  <h2>Analysis timeout</h2>
+  <p class="muted">Maximum time for one message's full analysis — including every tool-calling
+     round trip — before it's treated as a failure and handled per the failure mode above.
+     A self-hosted/local model with a multi-tool investigation can need more than the default;
+     raise this if you see <code>TimeoutError</code> in Logs after tool calls completed.
+     Leave blank to use this deployment's <code>AI_TIMEOUT_SECONDS</code> environment default
+     (currently {{ env_timeout_seconds }}s) — that one needs a container restart to change,
+     this field takes effect on the next message.</p>
+  <label>Timeout (seconds) <input type="number" name="timeout_seconds" min="5" step="1"
+         value="{{ cfg.ai.timeout_seconds or '' }}" placeholder="{{ env_timeout_seconds }} (default)"></label>
   <h2>System prompt
     {% if prompt_customized %}<span class="badge">customized</span>
     {% else %}<span class="badge muted">built-in default</span>{% endif %}</h2>

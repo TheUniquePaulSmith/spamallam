@@ -91,7 +91,7 @@ async def _rdap_ip(client: httpx.AsyncClient, ip: str) -> dict[str, Any]:
             last_exc = exc
             if attempt == 0:
                 await asyncio.sleep(1)
-    return {"error": f"RDAP registry lookup failed: {last_exc}"}
+    return {"error": f"RDAP registry lookup failed: {type(last_exc).__name__}: {last_exc}"}
 
 # ---------------------------------------------------------------------------
 # ip_lookup
@@ -138,7 +138,7 @@ async def ip_lookup(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]
     except FileNotFoundError:
         out["geoip"] = f"GeoIP database not found at {geo_path}; rDNS evidence only"
     except Exception as exc:  # noqa: BLE001
-        out["geoip"] = f"GeoIP lookup failed: {exc}"
+        out["geoip"] = f"GeoIP lookup failed: {type(exc).__name__}: {exc}"
 
     async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
         out["registry"] = await _rdap_ip(client, ip)
@@ -240,7 +240,7 @@ async def domain_age(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any
         resp.raise_for_status()
         data = resp.json()
     except Exception as exc:  # noqa: BLE001
-        return {"domain": domain, "error": f"RDAP lookup failed: {exc}"}
+        return {"domain": domain, "error": f"RDAP lookup failed: {type(exc).__name__}: {exc}"}
 
     registration = None
     for event in data.get("events", []):
