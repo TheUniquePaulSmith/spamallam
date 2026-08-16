@@ -428,3 +428,34 @@ if (testMessageToggleRaw) {
     testMessageToggleRaw.textContent = out.hidden ? "Show raw JSON" : "Hide raw JSON";
   });
 }
+
+/* ---- logs: formatted rendering of persisted traces (+ raw JSON toggle),
+   same renderMessageTest()/renderTestEvent()/renderSymbolsTable() machinery
+   as the Test/Provider Test pages. Rendered lazily on first expand, since a
+   page can hold up to 200 entries. ---- */
+const tracesList = document.getElementById("traces-list");
+if (tracesList) {
+  tracesList.addEventListener("toggle", (ev) => {
+    const details = ev.target;
+    if (!details.classList || !details.classList.contains("trace") || !details.open) return;
+    const friendly = details.querySelector(".trace-friendly");
+    if (!friendly || friendly.dataset.rendered) return;
+    friendly.dataset.rendered = "1";
+    try {
+      const raw = details.querySelector(".trace-raw");
+      const t = JSON.parse(raw.textContent);
+      const result = Object.assign({}, t, { reason: (t.verdict && t.verdict.drop_reason) || "" });
+      friendly.innerHTML = renderMessageTest(result);
+    } catch (err) {
+      friendly.innerHTML = `<p class="error">Couldn't render this trace: ${escapeHtml(err.message || String(err))}</p>`;
+    }
+  }, true); // capture: <details> "toggle" events don't bubble
+
+  tracesList.addEventListener("click", (ev) => {
+    const btn = ev.target.closest(".trace-toggle-raw");
+    if (!btn) return;
+    const raw = btn.closest(".trace").querySelector(".trace-raw");
+    raw.hidden = !raw.hidden;
+    btn.textContent = raw.hidden ? "Show raw JSON" : "Hide raw JSON";
+  });
+}

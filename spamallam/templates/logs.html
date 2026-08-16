@@ -7,6 +7,7 @@
   <input name="q" value="{{ q }}" placeholder="search (address, verdict, tool…)">
   <button>Filter</button>
 </form>
+<div id="traces-list">
 {% for t in traces %}
 <details class="card trace">
   <summary>
@@ -16,9 +17,14 @@
     · rspamd {{ t.verdict.rspamd_action }} ({{ '%.1f'|format(t.verdict.rspamd_score or 0) }})
     · <span class="{{ 'warn' if t.action == 'drop' else 'ok' }}">{{ t.action|upper }}</span>
   </summary>
-  <pre class="log">{{ t|tojson(indent=2) }}</pre>
+  <div class="trace-friendly"></div>
+  <p><button type="button" class="small trace-toggle-raw">Show raw JSON</button></p>
+  <pre class="log trace-raw" hidden>{{ t|tojson(indent=2) }}</pre>
 </details>
 {% else %}<p class="muted">No traces found.</p>{% endfor %}
+</div>
+
+<script src="/static/rspamd-symbols.js"></script>
 
 <form method="post" action="/settings/logging" class="card">
   <input type="hidden" name="csrf" value="{{ csrf }}">
