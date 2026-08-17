@@ -32,6 +32,17 @@ DEFAULTS: dict[str, Any] = {
         # Custom system prompt for the analysis LLM; empty = use the built-in
         # default (app.ai.prompt.DEFAULT_SYSTEM_PROMPT)
         "system_prompt": "",
+        # ai_first (default, today's behavior): AI analyzes, then rspamd scores
+        # the signed X-SpamAllam-* headers via its SPAMALLAM_* symbols.
+        # rspamd_first: rspamd scores the raw message first (never sees the
+        # SPAMALLAM_* symbols for that pass, since the headers don't exist yet);
+        # AI then runs afterward (unless bypassed below).
+        "pipeline_order": "ai_first",
+        # rspamd_first only: skip the AI call entirely when rspamd already
+        # rejects the message. Pure cost optimization -- rejected mail is
+        # dropped either way (see rspamd_drop), so this never changes the
+        # final outcome, it only saves the LLM API call.
+        "rspamd_bypass_on_reject": False,
     },
     "provider": {
         # openai | anthropic | custom
@@ -96,6 +107,12 @@ DEFAULTS: dict[str, Any] = {
         # Which AI verdicts (see SpamallamVerdict.verdict) trigger the banner /
         # image-breaking below. Never fires for DROP'd mail (nobody sees it).
         "trigger_verdicts": ["SPAM", "PHISHING", "MALICIOUS"],
+        # Also trigger the banner/image-breaking when rspamd's own action is
+        # spam-flagged but not a reject (add header/rewrite subject/greylist),
+        # independent of the AI verdict -- covers mail rspamd itself considers
+        # suspicious even when AI disagrees, wasn't run, or is disabled. Works
+        # in either pipeline_order.
+        "trigger_on_rspamd_spam": False,
         # HTML inserted right after <body> (or prepended if no <body> tag).
         # Tokens: {verdict} {confidence} {category} {reason} {model}
         "banner_template": (

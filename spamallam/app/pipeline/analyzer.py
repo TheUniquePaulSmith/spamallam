@@ -1,4 +1,5 @@
-"""The per-message pipeline: overrides -> AI analysis -> rspamd -> combined verdict.
+"""The per-message pipeline: overrides -> (AI analysis <-> rspamd, order
+admin-configurable via ai.pipeline_order) -> combined verdict.
 
 postfix (content_filter) -> spamallam SMTP :10026 -> THIS -> re-inject :10025
 """
@@ -97,47 +98,18 @@ class Pipeline:
                 verdict.reason = f"admin blocklist override ({bl_rule})"
                 trace.event("blocklist", rule=bl_rule)
 
-        # 3. AI analysis (skipped for overridden mail)
-        if not wl_rule and not bl_rule:
-            if cfg["ai"]["enabled"]:
-                try:
-                    timeout = cfg["ai"].get("timeout_seconds") or ENV.ai_timeout_seconds
-                    async with self._sem:
-                        verdict = await asyncio.wait_for(
-                            self._analyze(cleaned, envelope_from, rcpt_tos, client, trace),
-                            timeout=timeout,
-                        )
-                except Exception as exc:  # noqa: BLE001 — provider/timeout errors -> failure mode
-                    trace.event("ai_error", error=f"{type(exc).__name__}: {exc}")
-                    if cfg["ai"]["failure_mode"] == "tempfail":
-                        trace.finish(TEMPFAIL, {"error": str(exc)})
-                        return Decision(TEMPFAIL, reason="AI analysis failed"), trace
-                    verdict = hdr.SpamallamVerdict(verdict="ERROR", reason=str(exc)[:300])
-            else:
-                verdict = hdr.SpamallamVerdict(verdict="SKIPPED", reason="AI analysis disabled")
-                trace.event("ai_skipped", reason="disabled")
-
-        # 4. Add signed X-SpamAllam headers
-        tagged = hdr.prepend_headers(
-            cleaned, hdr.build_spamallam_headers(verdict, ENV.header_hmac_key)
-        )
-
-        # 5. rspamd scoring (always fail-open: rspamd outage must not lose mail)
-        rres = await rspamd_client.check(
-            ENV.rspamd_url,
-            tagged,
-            client_ip=client.get("addr", ""),
-            helo=client.get("helo", ""),
-            hostname=client.get("name", ""),
-            envelope_from=envelope_from,
-            rcpt_tos=rcpt_tos,
-        )
-        if rres.ok:
-            trace.event("rspamd", action=rres.action, score=rres.score,
-                        symbols={k: (v.get("score") if isinstance(v, dict) else v)
-                                 for k, v in rres.symbols.items()})
+        # 3-5. AI analysis + rspamd scoring, order per cfg["ai"]["pipeline_order"]
+        # (unrecognized/missing value falls back to "ai_first", today's default).
+        if cfg["ai"].get("pipeline_order") == "rspamd_first":
+            verdict, rres, tagged, early = await self._order_rspamd_first(
+                cleaned, envelope_from, rcpt_tos, client, trace, cfg, wl_rule, bl_rule, verdict,
+            )
         else:
-            trace.event("rspamd_error", error=rres.error)
+            verdict, rres, tagged, early = await self._order_ai_first(
+                cleaned, envelope_from, rcpt_tos, client, trace, cfg, wl_rule, bl_rule, verdict,
+            )
+        if early is not None:
+            return early, trace
 
         # 6. Combined verdict
         drop_verdicts = {v.upper() for v in cfg["ai"]["drop_verdicts"]}
@@ -156,7 +128,7 @@ class Pipeline:
 
         # 6b. SPAM warning banner / plaintext->HTML / image breaking / classification
         # footer -- only for mail that's actually delivered (fails open on any error).
-        tagged = body.rewrite(tagged, verdict, cfg, trace)
+        tagged = body.rewrite(tagged, verdict, rres, cfg, trace)
 
         # 7. Result headers for downstream mail rules (MailPlus etc.)
         result_headers: list[tuple[str, str]] = []
@@ -182,6 +154,108 @@ class Pipeline:
         from ..ai.engine import analyze_message
 
         return await analyze_message(cleaned, envelope_from, rcpt_tos, client, trace)
+
+    async def _run_ai_with_failure_handling(
+        self, cleaned: bytes, envelope_from: str, rcpt_tos: list[str], client: dict[str, Any],
+        trace: Any, cfg: dict[str, Any],
+    ) -> tuple[hdr.SpamallamVerdict, Decision | None]:
+        """Runs AI analysis (or the "disabled" stub) with the configured
+        timeout/concurrency limit and failure-mode handling. Identical
+        behavior regardless of pipeline order, since both orders call this
+        one method. Returns (verdict, None) normally, or
+        (verdict, tempfail-Decision) when the caller should return
+        immediately instead of continuing the pipeline."""
+        if not cfg["ai"]["enabled"]:
+            trace.event("ai_skipped", reason="disabled")
+            return hdr.SpamallamVerdict(verdict="SKIPPED", reason="AI analysis disabled"), None
+        try:
+            timeout = cfg["ai"].get("timeout_seconds") or ENV.ai_timeout_seconds
+            async with self._sem:
+                verdict = await asyncio.wait_for(
+                    self._analyze(cleaned, envelope_from, rcpt_tos, client, trace),
+                    timeout=timeout,
+                )
+            return verdict, None
+        except Exception as exc:  # noqa: BLE001 — provider/timeout errors -> failure mode
+            trace.event("ai_error", error=f"{type(exc).__name__}: {exc}")
+            if cfg["ai"]["failure_mode"] == "tempfail":
+                trace.finish(TEMPFAIL, {"error": str(exc)})
+                return hdr.SpamallamVerdict(), Decision(TEMPFAIL, reason="AI analysis failed")
+            return hdr.SpamallamVerdict(verdict="ERROR", reason=str(exc)[:300]), None
+
+    @staticmethod
+    async def _check_rspamd(message_bytes: bytes, envelope_from: str, rcpt_tos: list[str],
+                            client: dict[str, Any], trace: Any) -> rspamd_client.RspamdResult:
+        """rspamd scoring, always fail-open: rspamd outage must not lose mail."""
+        rres = await rspamd_client.check(
+            ENV.rspamd_url,
+            message_bytes,
+            client_ip=client.get("addr", ""),
+            helo=client.get("helo", ""),
+            hostname=client.get("name", ""),
+            envelope_from=envelope_from,
+            rcpt_tos=rcpt_tos,
+        )
+        if rres.ok:
+            trace.event("rspamd", action=rres.action, score=rres.score,
+                        symbols={k: (v.get("score") if isinstance(v, dict) else v)
+                                 for k, v in rres.symbols.items()})
+        else:
+            trace.event("rspamd_error", error=rres.error)
+        return rres
+
+    async def _order_ai_first(
+        self, cleaned: bytes, envelope_from: str, rcpt_tos: list[str], client: dict[str, Any],
+        trace: Any, cfg: dict[str, Any], wl_rule: str | None, bl_rule: str | None,
+        verdict: hdr.SpamallamVerdict,
+    ) -> tuple[hdr.SpamallamVerdict, rspamd_client.RspamdResult | None, bytes | None, Decision | None]:
+        """Today's default: AI analyzes (unless overridden), THEN rspamd scores
+        the signed X-SpamAllam-* headers via its SPAMALLAM_* symbols."""
+        if not wl_rule and not bl_rule:
+            verdict, early = await self._run_ai_with_failure_handling(
+                cleaned, envelope_from, rcpt_tos, client, trace, cfg,
+            )
+            if early is not None:
+                return verdict, None, None, early
+
+        tagged = hdr.prepend_headers(cleaned, hdr.build_spamallam_headers(verdict, ENV.header_hmac_key))
+        rres = await self._check_rspamd(tagged, envelope_from, rcpt_tos, client, trace)
+        return verdict, rres, tagged, None
+
+    async def _order_rspamd_first(
+        self, cleaned: bytes, envelope_from: str, rcpt_tos: list[str], client: dict[str, Any],
+        trace: Any, cfg: dict[str, Any], wl_rule: str | None, bl_rule: str | None,
+        verdict: hdr.SpamallamVerdict,
+    ) -> tuple[hdr.SpamallamVerdict, rspamd_client.RspamdResult | None, bytes | None, Decision | None]:
+        """rspamd scores the raw message first -- it never sees the
+        SPAMALLAM_* symbols for this pass, since the X-SpamAllam-* headers
+        don't exist yet at this point. If ai.rspamd_bypass_on_reject is on
+        and rspamd already rejects, AI is skipped entirely: the message is
+        dropped either way (see rspamd_drop below), so this is a pure cost
+        optimization with no effect on the final outcome."""
+        rres = await self._check_rspamd(cleaned, envelope_from, rcpt_tos, client, trace)
+
+        bypass = (
+            not wl_rule and not bl_rule
+            and cfg["ai"]["enabled"]
+            and cfg["ai"].get("rspamd_bypass_on_reject")
+            and rres.is_reject
+        )
+        if bypass:
+            verdict = hdr.SpamallamVerdict(
+                verdict="SKIPPED", category="rspamd_bypass",
+                reason="AI analysis skipped: rspamd already rejected (bypass enabled)",
+            )
+            trace.event("ai_bypass", reason="rspamd_reject", rspamd_action=rres.action, rspamd_score=rres.score)
+        elif not wl_rule and not bl_rule:
+            verdict, early = await self._run_ai_with_failure_handling(
+                cleaned, envelope_from, rcpt_tos, client, trace, cfg,
+            )
+            if early is not None:
+                return verdict, rres, None, early
+
+        tagged = hdr.prepend_headers(cleaned, hdr.build_spamallam_headers(verdict, ENV.header_hmac_key))
+        return verdict, rres, tagged, None
 
     @staticmethod
     def _save_raw_copy(tagged: bytes, trace: Any) -> bool:
@@ -241,10 +315,11 @@ class _TestRecorder:
 async def process_test(
     raw: bytes, envelope_from: str, rcpt_tos: list[str], client: dict[str, Any]
 ) -> dict[str, Any]:
-    """Run a message through the full live pipeline (overrides -> AI -> rspamd ->
-    combined decision) for the admin UI's message-test page, without writing a
-    trace log entry. Uses the real configured provider/tools, so tool side
-    effects (e.g. UniFi auto-block) still apply exactly as they would for mail."""
+    """Run a message through the full live pipeline (overrides -> AI/rspamd, in
+    whichever order is configured -> combined decision) for the admin UI's
+    message-test page, without writing a trace log entry. Uses the real
+    configured provider/tools, so tool side effects (e.g. UniFi auto-block)
+    still apply exactly as they would for mail."""
     recorder = _TestRecorder()
     decision, _ = await PIPELINE.process(raw, envelope_from, rcpt_tos, client, trace=recorder)
     return {

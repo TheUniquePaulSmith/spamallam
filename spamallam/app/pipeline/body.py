@@ -19,6 +19,7 @@ from html.parser import HTMLParser
 from typing import Any
 
 from .headers import SpamallamVerdict
+from .rspamd_client import RspamdResult
 
 # S/MIME and PGP/MIME: touching the body would corrupt the signature/ciphertext.
 _SKIP_CONTENT_TYPES = {"multipart/signed", "multipart/encrypted"}
@@ -152,27 +153,56 @@ def _classification_footer_text(labels: list[str]) -> str:
     return f"\n\n-- \nSpamAllam: {tags}"
 
 
-def _wants_marking(verdict: SpamallamVerdict, marking_cfg: dict[str, Any]) -> bool:
-    if not marking_cfg.get("enabled"):
-        return False
+def _ai_wants_marking(verdict: SpamallamVerdict, marking_cfg: dict[str, Any]) -> bool:
     triggers = {v.upper() for v in marking_cfg.get("trigger_verdicts", [])}
     return verdict.verdict.upper() in triggers
 
 
-def _wants_images_broken(verdict: SpamallamVerdict, marking_cfg: dict[str, Any]) -> bool:
+def _rspamd_wants_marking(rres: RspamdResult | None, marking_cfg: dict[str, Any]) -> bool:
+    if not marking_cfg.get("trigger_on_rspamd_spam"):
+        return False
+    return rres is not None and rres.ok and rres.is_spam and not rres.is_reject
+
+
+def _wants_marking(verdict: SpamallamVerdict, rres: RspamdResult | None, marking_cfg: dict[str, Any]) -> bool:
+    if not marking_cfg.get("enabled"):
+        return False
+    return _ai_wants_marking(verdict, marking_cfg) or _rspamd_wants_marking(rres, marking_cfg)
+
+
+def _wants_images_broken(verdict: SpamallamVerdict, rres: RspamdResult | None, marking_cfg: dict[str, Any]) -> bool:
     scope = (marking_cfg.get("break_images") or {}).get("scope", "off")
     if scope == "all_mail":
         return True
     if scope == "spam_only":
-        return _wants_marking(verdict, marking_cfg)
+        return _wants_marking(verdict, rres, marking_cfg)
     return False
+
+
+def _banner_verdict(verdict: SpamallamVerdict, rres: RspamdResult | None,
+                     marking_cfg: dict[str, Any]) -> SpamallamVerdict:
+    """The AI's own verdict already reads sensibly in the banner template
+    when it's what triggered marking. But when only the rspamd-driven
+    trigger fired (verdict.verdict not in trigger_verdicts -- e.g. AI said
+    HAM, wasn't run, or is disabled), showing the raw AI verdict would
+    render a nonsensical banner ("flagged this message as HAM"). Synthesize
+    sensible banner content from rspamd's own result in that case instead."""
+    if _ai_wants_marking(verdict, marking_cfg) or rres is None or not rres.ok:
+        return verdict
+    confidence = max(0.0, min(1.0, rres.score / rres.required_score)) if rres.required_score else 0.0
+    reason = f"rspamd scored this message {rres.score:.1f}/{rres.required_score:.1f}"
+    if verdict.verdict not in ("", "SKIPPED"):
+        reason += f" (AI verdict: {verdict.verdict})"
+    return SpamallamVerdict(verdict="SPAM", confidence=confidence, category="rspamd",
+                             reason=reason, model=verdict.model)
 
 
 def _wants_classification_footer(classification_cfg: dict[str, Any]) -> bool:
     return bool(classification_cfg.get("enabled")) and classification_cfg.get("placement", "header") in ("footer", "both")
 
 
-def rewrite(raw: bytes, verdict: SpamallamVerdict, cfg: dict[str, Any], trace: Any) -> bytes:
+def rewrite(raw: bytes, verdict: SpamallamVerdict, rres: RspamdResult | None,
+            cfg: dict[str, Any], trace: Any) -> bytes:
     """Insert a SPAM warning banner, convert plaintext to HTML when needed,
     break remote images, and append a classification footer -- all
     admin-configurable via cfg["marking"] / cfg["classification"]. Fails
@@ -180,28 +210,31 @@ def rewrite(raw: bytes, verdict: SpamallamVerdict, cfg: dict[str, Any], trace: A
     marking_cfg = cfg.get("marking", {})
     classification_cfg = cfg.get("classification", {})
 
-    do_mark = _wants_marking(verdict, marking_cfg)
-    do_images = _wants_images_broken(verdict, marking_cfg)
+    do_mark = _wants_marking(verdict, rres, marking_cfg)
+    do_images = _wants_images_broken(verdict, rres, marking_cfg)
     do_footer = _wants_classification_footer(classification_cfg) and bool(verdict.labels)
 
     if not (do_mark or do_images or do_footer):
         return raw
 
     try:
-        return _rewrite(raw, verdict, marking_cfg, do_mark, do_images, do_footer)
+        return _rewrite(raw, verdict, rres, marking_cfg, do_mark, do_images, do_footer)
     except Exception as exc:  # noqa: BLE001 -- cosmetic feature must never break delivery
         trace.event("body_rewrite_error", error=f"{type(exc).__name__}: {exc}")
         return raw
 
 
-def _rewrite(raw: bytes, verdict: SpamallamVerdict, marking_cfg: dict[str, Any],
+def _rewrite(raw: bytes, verdict: SpamallamVerdict, rres: RspamdResult | None, marking_cfg: dict[str, Any],
              do_mark: bool, do_images: bool, do_footer: bool) -> bytes:
     msg = email.message_from_bytes(raw, policy=email.policy.default)
 
     if msg.get_content_type() in _SKIP_CONTENT_TYPES:
         return raw
 
-    banner_html = _render_banner(marking_cfg.get("banner_template", ""), verdict) if do_mark else ""
+    banner_html = (
+        _render_banner(marking_cfg.get("banner_template", ""), _banner_verdict(verdict, rres, marking_cfg))
+        if do_mark else ""
+    )
     footer_html = (
         _classification_footer_html(verdict.labels, marking_cfg.get("footer_template", ""))
         if do_footer else ""

@@ -7,6 +7,10 @@ def test_defaults_and_dotted_set(tmp_path: Path):
     store = SettingsStore(tmp_path / "settings.yml")
     assert store.get("ai.enabled") is False
     assert store.get("tools.unifi_block.policy") == "suggest"
+    # pipeline order/bypass/rspamd-marking default to today's exact behavior
+    assert store.get("ai.pipeline_order") == "ai_first"
+    assert store.get("ai.rspamd_bypass_on_reject") is False
+    assert store.get("marking.trigger_on_rspamd_spam") is False
 
     old, new = store.set("ai.enabled", True)
     assert (old, new) == (False, True)

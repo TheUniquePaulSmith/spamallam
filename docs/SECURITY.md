@@ -65,6 +65,13 @@ container may eventually be compromised. Goals, in order:
 - Downstream (MailPlus rules) can therefore trust `X-SpamAllam-*` only because
   the internet-facing edge strips them first; if you re-architect the mail
   path, preserve that property.
+- This trust chain holds regardless of the admin-configurable AI/rspamd
+  pipeline order (`ai.pipeline_order`, see AI settings). In "rspamd first"
+  mode, rspamd scores the message *before* the `X-SpamAllam-*` headers exist
+  for that pass, so it simply never sees them — the Lua plugin already
+  handles a missing verdict header gracefully (bails out with no
+  `SPAMALLAM_*` symbols added, no error), so no plugin change was needed.
+  This is a scoring-coverage trade-off, not a trust-chain weakening.
 
 ## Admin interface
 

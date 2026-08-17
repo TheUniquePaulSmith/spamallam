@@ -18,6 +18,13 @@ flowchart TD
     PF2 --> MS["your mail server"]
 ```
 
+Shown above is the default order (AI first, so rspamd's `SPAMALLAM_*` symbols
+reflect the AI verdict). The AI ↔ rspamd order is admin-configurable on the
+AI settings page — flipping to rspamd-first lets rspamd's free local baseline
+score the message before any LLM call, with an optional bypass to skip AI
+entirely when rspamd already rejects (mail is dropped either way, so this is
+a pure cost optimization for paid LLM providers).
+
 High-confidence phishing/malware is silently dropped; everything else is
 delivered carrying verdict headers (`X-Spam-Flag`, `X-Spam-Status`,
 `X-SpamAllam-*`) that your mail server's rules can file into folders.
@@ -41,8 +48,9 @@ delivered carrying verdict headers (`X-Spam-Flag`, `X-Spam-Status`,
   guard-railed **UniFi network-block** integration.
 - **rspamd best-practice baseline** — redis-backed bayes with autolearn, RBLs,
   SPF/DKIM/DMARC/ARC, ClamAV + optional VirusTotal, fuzzy check; a custom Lua
-  plugin converts the HMAC-verified AI headers into weighted symbols. The GPT
-  module is deliberately disabled.
+  plugin converts the HMAC-verified AI headers into weighted symbols (only
+  when AI ran before rspamd for that message — see pipeline order above). The
+  GPT module is deliberately disabled.
 - **Passkey-only admin UI** — FIDO2 WebAuthn (no passwords exist), one-time
   setup token bootstrap, invite links, multiple device-bound passkeys per user,
   full technical message traces, and an append-only admin audit log. All state

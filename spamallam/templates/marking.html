@@ -17,6 +17,13 @@ messages, and any rewrite failure silently falls back to delivering the message 
   <label class="row"><input type="checkbox" name="trigger_{{ v|lower }}"
     {{ 'checked' if v in cfg.marking.trigger_verdicts }}><span>{{ v }}</span></label>
   {% endfor %}
+  <label class="row"><input type="checkbox" name="trigger_on_rspamd_spam"
+    {{ 'checked' if cfg.marking.trigger_on_rspamd_spam }}>
+    <span>Also mark when rspamd itself flags the message as spam-ish but not a hard reject
+    (add header / rewrite subject / greylist) — independent of the AI verdict. Fires even if
+    AI says HAM, wasn't run in time, is disabled, or was skipped by the
+    <a href="/settings/ai">rspamd-reject bypass</a>; works the same regardless of pipeline
+    order.</span></label>
 
   <h2>Banner</h2>
   <label>Banner HTML template <span class="muted">(tokens: {verdict} {confidence} {category} {reason}

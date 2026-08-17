@@ -156,3 +156,86 @@ async def test_test_message_path_skips_raw_copy(monkeypatch):
     result = await process_test(RAW, "s@x.example", ["u@test.example"], CLIENT)
     assert result["action"] == DROP
     assert result["verdict"]["raw_saved"] is False
+
+
+async def test_rspamd_first_bypass_skips_ai_on_reject(monkeypatch):
+    SETTINGS.set("ai.enabled", True)
+    SETTINGS.set("ai.pipeline_order", "rspamd_first")
+    SETTINGS.set("ai.rspamd_bypass_on_reject", True)
+    monkeypatch.setattr(analyzer.rspamd_client, "check", fake_rspamd(action="reject", score=22.0))
+
+    calls = []
+
+    async def spy(self, *a, **k):
+        calls.append(1)
+        raise AssertionError("AI must not be called when rspamd bypass triggers")
+
+    monkeypatch.setattr(Pipeline, "_analyze", spy)
+    decision, trace = await Pipeline().process(RAW, "s@x.example", ["u@test.example"], CLIENT)
+    assert decision.action == DROP
+    assert calls == []
+    assert trace.data["verdict"]["ai_category"] == "rspamd_bypass"
+
+
+async def test_rspamd_first_bypass_does_not_skip_on_non_reject(monkeypatch):
+    from app.pipeline.headers import SpamallamVerdict
+
+    SETTINGS.set("ai.enabled", True)
+    SETTINGS.set("ai.pipeline_order", "rspamd_first")
+    SETTINGS.set("ai.rspamd_bypass_on_reject", True)
+    monkeypatch.setattr(analyzer.rspamd_client, "check", fake_rspamd(action="add header", score=8.0))
+
+    async def ham(self, *a, **k):
+        return SpamallamVerdict(verdict="HAM", confidence=0.9, model="test/model")
+
+    monkeypatch.setattr(Pipeline, "_analyze", ham)
+    decision, trace = await Pipeline().process(RAW, "s@x.example", ["u@test.example"], CLIENT)
+    assert decision.action == DELIVER
+    assert trace.data["verdict"]["ai_verdict"] == "HAM"
+
+
+async def test_rspamd_first_without_bypass_still_runs_ai_on_reject(monkeypatch):
+    from app.pipeline.headers import SpamallamVerdict
+
+    SETTINGS.set("ai.enabled", True)
+    SETTINGS.set("ai.pipeline_order", "rspamd_first")
+    # rspamd_bypass_on_reject left at its default (False)
+    monkeypatch.setattr(analyzer.rspamd_client, "check", fake_rspamd(action="reject", score=22.0))
+
+    calls = []
+
+    async def ham(self, *a, **k):
+        calls.append(1)
+        return SpamallamVerdict(verdict="HAM", confidence=0.9, model="test/model")
+
+    monkeypatch.setattr(Pipeline, "_analyze", ham)
+    decision, _ = await Pipeline().process(RAW, "s@x.example", ["u@test.example"], CLIENT)
+    # rspamd_drop fires regardless of what AI said -- AI's HAM verdict never
+    # changes the outcome, but it still ran since bypass is off
+    assert decision.action == DROP
+    assert "rspamd reject" in decision.reason
+    assert calls == [1]
+
+
+async def test_rspamd_called_exactly_once_per_order(monkeypatch):
+    from app.pipeline.headers import SpamallamVerdict
+
+    SETTINGS.set("ai.enabled", True)
+
+    async def ham(self, *a, **k):
+        return SpamallamVerdict(verdict="HAM", confidence=0.9)
+
+    monkeypatch.setattr(Pipeline, "_analyze", ham)
+
+    for order in ("ai_first", "rspamd_first"):
+        SETTINGS.set("ai.pipeline_order", order)
+        call_count = {"n": 0}
+
+        async def counting_check(*args, **kwargs):
+            call_count["n"] += 1
+            return rspamd_client.RspamdResult(ok=True, action="no action", score=1.0, required_score=15.0)
+
+        monkeypatch.setattr(analyzer.rspamd_client, "check", counting_check)
+        decision, _ = await Pipeline().process(RAW, "s@x.example", ["u@test.example"], CLIENT)
+        assert decision.action == DELIVER
+        assert call_count["n"] == 1, f"rspamd called {call_count['n']} times for order={order}"

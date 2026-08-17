@@ -7,8 +7,35 @@
   <label class="row">
     <input type="checkbox" name="enabled" {{ 'checked' if cfg.ai.enabled }}>
     <span><strong>Enable AI analysis</strong> — every inbound message is analyzed by the
-      configured LLM provider before rspamd scoring</span>
+      configured LLM provider (order relative to rspamd is set below)</span>
   </label>
+
+  <h2>Pipeline order</h2>
+  <p class="muted">Which scoring engine sees the message first. This only changes when each
+     runs and what rspamd can see — the final DROP/DELIVER decision (AI high-confidence
+     threat, or rspamd reject) is combined from both regardless of order.</p>
+  <label class="row"><input type="radio" name="pipeline_order" value="ai_first"
+      {{ 'checked' if cfg.ai.pipeline_order != 'rspamd_first' }}>
+    <span><strong>AI first</strong> (default) — AI analyzes the message, then rspamd scores it
+      including the signed <code>X-SpamAllam-*</code> headers (its <code>SPAMALLAM_*</code>
+      symbols reflect the AI verdict)</span></label>
+  <label class="row"><input type="radio" name="pipeline_order" value="rspamd_first"
+      {{ 'checked' if cfg.ai.pipeline_order == 'rspamd_first' }}>
+    <span><strong>rspamd first</strong> — rspamd's fast local baseline (bayes, RBLs,
+      SPF/DKIM/DMARC, ClamAV) scores the raw message before AI ever sees it. Since the
+      <code>X-SpamAllam-*</code> headers don't exist yet at that point, rspamd's
+      <code>SPAMALLAM_*</code> symbols never fire for that pass. Useful if you're paying
+      per-token for a hosted LLM and want rspamd's free baseline to run first.</span></label>
+  <label class="row"><input type="checkbox" name="rspamd_bypass_on_reject"
+      {{ 'checked' if cfg.ai.rspamd_bypass_on_reject }}>
+    <span>Skip the AI call entirely when rspamd already rejects the message (only applies in
+      "rspamd first" mode). Pure cost savings: a rejected message is silently dropped either
+      way, regardless of what AI would have said, so this never changes the outcome — it just
+      avoids paying for an LLM call on mail that's being discarded regardless. Note: if
+      Failure mode below is set to Tempfail and this is off, a postfix retry will re-run
+      rspamd on every attempt in "rspamd first" mode (in "AI first" mode a tempfail happens
+      before rspamd is ever called).</span></label>
+
   <h2>Failure mode</h2>
   <p class="muted">What happens to a message when the AI provider is unreachable,
      times out, or errors.</p>
