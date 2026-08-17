@@ -9,11 +9,12 @@
 </form>
 <div id="traces-list">
 {% for t in traces %}
+{% set msg = t.message or {} %}
 <details class="card trace">
   <summary class="trace-row">
     <span class="mono muted trace-col-time">{{ t.ts }}</span>
-    <span class="trace-col-subject" title="{{ t.message.subject }}">{{ t.message.subject or '(no subject)' }}</span>
-    <span class="mono trace-col-from" title="{{ t.message.from or t.envelope_from }}">{{ t.message.from or t.envelope_from or '<>' }}</span>
+    <span class="trace-col-subject" title="{{ msg.subject }}">{{ msg.subject or '(no subject)' }}</span>
+    <span class="mono trace-col-from" title="{{ msg.from or t.envelope_from }}">{{ msg.from or t.envelope_from or '<>' }}</span>
     <span class="mono muted trace-col-mx" title="{{ t.client.addr }}">{{ t.client.name or t.client.addr or '-' }}</span>
     <span class="small trace-col-verdict">{{ t.verdict.ai_verdict }} {{ '%.0f'|format((t.verdict.ai_confidence or 0) * 100) }}%</span>
     <span class="badge trace-col-action {{ 'error' if t.action == 'drop' else ('warn' if t.action == 'tempfail' else 'ok') }}">{{ t.action|upper }}</span>
@@ -22,8 +23,8 @@
     <div class="cols small">
       <div>
         <p><strong>Trace ID:</strong> <span class="mono">{{ t.id }}</span></p>
-        <p><strong>Message-ID:</strong> <span class="mono">{{ t.message.message_id or '-' }}</span></p>
-        <p><strong>From:</strong> {{ t.message.from or '-' }}</p>
+        <p><strong>Message-ID:</strong> <span class="mono">{{ msg.message_id or '-' }}</span></p>
+        <p><strong>From:</strong> {{ msg.from or '-' }}</p>
         <p><strong>Envelope from:</strong> {{ t.envelope_from or '<>' }}</p>
         <p><strong>Rcpt to:</strong> {{ t.rcpt_tos|join(', ') }}</p>
         <p><strong>Connecting host:</strong> <span class="mono">{{ t.client.name or '-' }} [{{ t.client.addr }}]</span></p>
