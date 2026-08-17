@@ -3,18 +3,19 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from ..ai.engine import run_provider_test
 from ..config import ENV
-from ..store import audit, tracelog
+from ..store import audit, rawlog, tracelog
 from ..store import users as users_store
 from ..store.secrets import SecretsBox, redact
 from ..store.settings import SETTINGS
@@ -467,7 +468,8 @@ def create_app() -> FastAPI:
                            trigger_malicious: str = Form(""),
                            banner_template: str = Form(""),
                            convert_plaintext_to_html: str = Form(""),
-                           break_images_scope: str = Form("off")):
+                           break_images_scope: str = Form("off"),
+                           footer_template: str = Form("")):
         username = security.require_admin(request)
         security.check_csrf(username, csrf)
 
@@ -487,6 +489,7 @@ def create_app() -> FastAPI:
             "marking.banner_template": banner_template,
             "marking.convert_plaintext_to_html": convert_plaintext_to_html == "on",
             "marking.break_images.scope": break_images_scope,
+            "marking.footer_template": footer_template,
         })
         audit.record_changes(username, changes)
         return RedirectResponse(_flash_url("/settings/marking", "saved", "Saved."), status_code=303)
@@ -577,6 +580,26 @@ def create_app() -> FastAPI:
             traces = [t for t in traces if needle in json.dumps(t).lower()]
         return render(request, "logs.html", username, traces=traces, day=day, q=q,
                       retention=SETTINGS.get("logging.retention_days"))
+
+    _DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+    _TRACE_ID_RE = re.compile(r"^[0-9a-f]{1,32}$")
+
+    @app.get("/logs/raw/{day}/{trace_id}")
+    async def logs_raw(request: Request, day: str, trace_id: str):
+        security.require_user(request)
+        if not _DAY_RE.match(day) or not _TRACE_ID_RE.match(trace_id):
+            raise HTTPException(status_code=400, detail="bad id")
+        data = rawlog.read(trace_id, day)
+        if data is None:
+            raise HTTPException(status_code=404, detail="not found")
+        # Forced download, never rendered inline: this is a dropped phishing/
+        # malicious message and may still contain live links/tracking pixels
+        # in its text/html part.
+        return Response(
+            content=data,
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="dropped-{trace_id}.eml"'},
+        )
 
     @app.post("/settings/logging")
     async def logging_save(request: Request, csrf: str = Form(...),

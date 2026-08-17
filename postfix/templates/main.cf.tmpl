@@ -74,7 +74,7 @@ smtpd_data_restrictions =
 ${RELAY_RECIPIENT_MAPS_LINE}
 
 # Dynamic recipient verification (only active in RECIPIENT_VALIDATION=verify)
-address_verify_map = btree:$data_directory/verify_cache
+address_verify_map = sdbm:$data_directory/verify_cache
 unverified_recipient_reject_code = 550
 address_verify_sender = <>
 
@@ -94,7 +94,7 @@ smtpd_tls_mandatory_protocols = >=TLSv1.2
 smtpd_tls_mandatory_ciphers = high
 tls_preempt_cipherlist = yes
 smtpd_tls_received_header = yes
-smtpd_tls_session_cache_database = btree:$data_directory/smtpd_tlscache
+smtpd_tls_session_cache_database = sdbm:$data_directory/smtpd_tlscache
 smtpd_tls_loglevel = 1
 
 # ---- TLS (client side, to the internal mail server) ------------------------

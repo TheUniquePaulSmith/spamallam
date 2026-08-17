@@ -116,6 +116,15 @@ DEFAULTS: dict[str, Any] = {
         "break_images": {
             "scope": "off",   # off | spam_only | all_mail
         },
+        # HTML for the classification footer (see classification.labels below).
+        # Inserted right before </body> (or appended if no </body> tag) when
+        # classification.placement is "footer" or "both". Token: {tags} --
+        # the space-separated [[spamallam:key]] MailPlus-keyword tags.
+        "footer_template": (
+            '<div style="margin-top:16px;padding-top:8px;border-top:1px solid #ddd;'
+            'font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#888;">'
+            "SpamAllam: {tags}</div>"
+        ),
     },
     "classification": {
         "enabled": False,

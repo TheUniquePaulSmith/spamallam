@@ -4,7 +4,8 @@
 <h1>Mail classification</h1>
 <p class="muted">When enabled, the AI may tag each message with 0–3 of the labels below (as part of
 its normal analysis — no extra LLM call). The result is emitted as the <code>X-SpamAllam-Labels</code>
-header (for scripting/log tooling) and/or a small footer in the body.</p>
+header (for scripting/log tooling) and/or a small footer in the body. The footer's HTML template is
+customizable on the <a href="/settings/marking">Marking</a> page, alongside the SPAM warning banner.</p>
 <p class="muted"><strong>Synology MailPlus's filter-rule builder cannot match on headers</strong> —
 only From/To/Subject/Keyword/Size. So to apply a native MailPlus "Label" automatically, keep the
 body footer on (default) and create a MailPlus filter rule per label with a <strong>Keyword</strong>
@@ -28,23 +29,27 @@ condition matching that label's exact tag shown below, e.g. action "Add label: N
 <div class="card">
   <h2>Labels</h2>
   {% for label in cfg.classification.labels %}
-  <form method="post" action="/settings/classification/label" class="inline-form">
+  <form method="post" action="/settings/classification/label" class="label-form">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <input type="hidden" name="key" value="{{ label.key }}">
-    <strong>{{ label.key }}</strong>
-    <input name="name" value="{{ label.name }}" placeholder="Display name">
-    <input name="description" value="{{ label.description }}" placeholder="Criteria for the AI">
-    <label class="row"><input type="checkbox" name="label_enabled"
-      {{ 'checked' if label.enabled }}><span>Enabled</span></label>
-    <span class="muted">MailPlus keyword: <code>[[spamallam:{{ label.key }}]]</code></span>
-    {% if is_admin %}
-      <button>Update</button>
-      <button name="delete" value="on" class="danger">Delete</button>
-    {% endif %}
+    <div class="label-row">
+      <span class="mono label-key">{{ label.key }}</span>
+      <input name="name" value="{{ label.name }}" placeholder="Display name">
+      <input name="description" value="{{ label.description }}" placeholder="Criteria for the AI">
+      <label class="row compact"><input type="checkbox" name="label_enabled"
+        {{ 'checked' if label.enabled }}><span>Enabled</span></label>
+      <div class="label-actions">
+        {% if is_admin %}
+          <button>Update</button>
+          <button name="delete" value="on" class="danger">Delete</button>
+        {% endif %}
+      </div>
+    </div>
+    <div class="small muted label-tag">MailPlus keyword: <code>[[spamallam:{{ label.key }}]]</code></div>
   </form>
   {% else %}<p class="muted">No labels defined yet.</p>{% endfor %}
   {% if is_admin %}
-  <form method="post" action="/settings/classification/label" class="inline-form">
+  <form method="post" action="/settings/classification/label" class="label-row label-row-add">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <input name="key" placeholder="key (lowercase, no spaces)" required pattern="[a-z0-9_-]+">
     <input name="name" placeholder="Display name" required>

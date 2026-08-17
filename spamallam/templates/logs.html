@@ -10,16 +10,40 @@
 <div id="traces-list">
 {% for t in traces %}
 <details class="card trace">
-  <summary>
-    <span class="mono">{{ t.ts }}</span>
-    <strong>{{ t.envelope_from or '<>' }}</strong> → {{ t.rcpt_tos|join(', ') }}
-    · {{ t.verdict.ai_verdict }} {{ '%.2f'|format(t.verdict.ai_confidence or 0) }}
-    · rspamd {{ t.verdict.rspamd_action }} ({{ '%.1f'|format(t.verdict.rspamd_score or 0) }})
-    · <span class="{{ 'warn' if t.action == 'drop' else 'ok' }}">{{ t.action|upper }}</span>
+  <summary class="trace-row">
+    <span class="mono muted trace-col-time">{{ t.ts }}</span>
+    <span class="trace-col-subject" title="{{ t.message.subject }}">{{ t.message.subject or '(no subject)' }}</span>
+    <span class="mono trace-col-from" title="{{ t.message.from or t.envelope_from }}">{{ t.message.from or t.envelope_from or '<>' }}</span>
+    <span class="mono muted trace-col-mx" title="{{ t.client.addr }}">{{ t.client.name or t.client.addr or '-' }}</span>
+    <span class="small trace-col-verdict">{{ t.verdict.ai_verdict }} {{ '%.0f'|format((t.verdict.ai_confidence or 0) * 100) }}%</span>
+    <span class="badge trace-col-action {{ 'error' if t.action == 'drop' else ('warn' if t.action == 'tempfail' else 'ok') }}">{{ t.action|upper }}</span>
   </summary>
-  <div class="trace-friendly"></div>
-  <p><button type="button" class="small trace-toggle-raw">Show raw JSON</button></p>
-  <pre class="log trace-raw" hidden>{{ t|tojson(indent=2) }}</pre>
+  <div class="trace-detail">
+    <div class="cols small">
+      <div>
+        <p><strong>Trace ID:</strong> <span class="mono">{{ t.id }}</span></p>
+        <p><strong>Message-ID:</strong> <span class="mono">{{ t.message.message_id or '-' }}</span></p>
+        <p><strong>From:</strong> {{ t.message.from or '-' }}</p>
+        <p><strong>Envelope from:</strong> {{ t.envelope_from or '<>' }}</p>
+        <p><strong>Rcpt to:</strong> {{ t.rcpt_tos|join(', ') }}</p>
+        <p><strong>Connecting host:</strong> <span class="mono">{{ t.client.name or '-' }} [{{ t.client.addr }}]</span></p>
+      </div>
+      <div>
+        <p><strong>AI verdict:</strong> {{ t.verdict.ai_verdict }} ({{ '%.0f'|format((t.verdict.ai_confidence or 0) * 100) }}%)</p>
+        <p><strong>Category:</strong> {{ t.verdict.ai_category or '-' }}</p>
+        <p><strong>Reason:</strong> {{ t.verdict.ai_reason or '-' }}</p>
+        <p><strong>rspamd:</strong> {{ t.verdict.rspamd_action }} ({{ '%.1f'|format(t.verdict.rspamd_score or 0) }})</p>
+        {% if t.verdict.drop_reason %}<p><strong>Drop reason:</strong> {{ t.verdict.drop_reason }}</p>{% endif %}
+      </div>
+    </div>
+    {% if t.verdict.raw_saved %}
+    <p><a class="small" href="/logs/raw/{{ t.day }}/{{ t.id }}">⬇ Download original (attachments stripped)</a>
+      <span class="muted small">— downloads as a file, not opened inline: this was dropped as spam/phishing/malicious and may contain live links or tracking pixels.</span></p>
+    {% endif %}
+    <div class="trace-friendly"></div>
+    <p><button type="button" class="small trace-toggle-raw">Show raw JSON</button></p>
+    <pre class="log trace-raw" hidden>{{ t|tojson(indent=2) }}</pre>
+  </div>
 </details>
 {% else %}<p class="muted">No traces found.</p>{% endfor %}
 </div>

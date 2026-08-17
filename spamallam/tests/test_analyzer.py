@@ -2,6 +2,7 @@ import pytest
 
 from app.pipeline import analyzer, rspamd_client
 from app.pipeline.analyzer import DELIVER, DROP, Pipeline
+from app.store import rawlog
 from app.store.settings import SETTINGS
 
 RAW = (
@@ -114,3 +115,44 @@ async def test_ai_high_confidence_phishing_drops(monkeypatch):
     decision, _ = await Pipeline().process(RAW, "s@x.example", ["u@test.example"], CLIENT)
     assert decision.action == DELIVER
     assert b"X-SpamAllam-Verdict: PHISHING" in decision.message
+
+
+async def test_ai_high_confidence_drop_saves_raw_copy(monkeypatch):
+    from app.pipeline.headers import SpamallamVerdict
+
+    SETTINGS.set("ai.enabled", True)
+    monkeypatch.setattr(analyzer.rspamd_client, "check", fake_rspamd())
+
+    async def malicious(self, *a, **k):
+        return SpamallamVerdict(verdict="MALICIOUS", confidence=0.99,
+                                category="malware", model="test/model")
+
+    monkeypatch.setattr(Pipeline, "_analyze", malicious)
+    decision, trace = await Pipeline().process(RAW, "s@x.example", ["u@test.example"], CLIENT)
+    assert decision.action == DROP
+    assert trace.data["verdict"]["raw_saved"] is True
+
+    saved = rawlog.read(trace.id, trace.day)
+    assert saved is not None
+    assert b"X-SpamAllam-Verdict: MALICIOUS" in saved
+    assert b"hello" in saved  # original text/plain body preserved
+
+
+async def test_test_message_path_skips_raw_copy(monkeypatch):
+    """The admin message-test page uses _TestRecorder, which has no trace
+    id/day -- raw copies must never be attempted (and never persisted) for
+    ad-hoc test sends."""
+    from app.pipeline.analyzer import process_test
+    from app.pipeline.headers import SpamallamVerdict
+
+    SETTINGS.set("ai.enabled", True)
+    monkeypatch.setattr(analyzer.rspamd_client, "check", fake_rspamd())
+
+    async def malicious(self, *a, **k):
+        return SpamallamVerdict(verdict="MALICIOUS", confidence=0.99,
+                                category="malware", model="test/model")
+
+    monkeypatch.setattr(Pipeline, "_analyze", malicious)
+    result = await process_test(RAW, "s@x.example", ["u@test.example"], CLIENT)
+    assert result["action"] == DROP
+    assert result["verdict"]["raw_saved"] is False
