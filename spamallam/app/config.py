@@ -37,6 +37,9 @@ class Env:
     reinject_port: int = field(default_factory=lambda: int(_env("REINJECT_PORT", "10025")))
 
     rspamd_url: str = field(default_factory=lambda: _env("RSPAMD_URL", "http://rspamd:11333"))
+    # DB 1: kept separate from rspamd's own bayes/fuzzy/greylist state on DB 0,
+    # so clearing the netinfo tool cache can never touch rspamd's learned corpus.
+    redis_url: str = field(default_factory=lambda: _env("REDIS_URL", "redis://redis:6379/1"))
 
     admin_port: int = field(default_factory=lambda: int(_env("ADMIN_PORT", "8443")))
     admin_external_host: str = field(

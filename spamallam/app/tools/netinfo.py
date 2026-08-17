@@ -12,7 +12,19 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from . import providers_db
+from . import cache, providers_db
+
+# ---------------------------------------------------------------------------
+# Cache TTLs. Keyed to how fast each fact actually changes — not one blanket
+# value. Only the expensive network primitives are cached; fields derived
+# from admin config (GeoIP non-US note, domain young-age note) are always
+# recomputed after the cached fetch, never baked into the cached blob, so
+# they can't go stale relative to either wall-clock time or a config change.
+# ---------------------------------------------------------------------------
+_TTL_RDAP_IP = 3600        # 1h — RIR ownership rarely changes
+_TTL_RDNS = 3600           # 1h
+_TTL_RDAP_DOMAIN = 21600   # 6h — registration facts are close to static
+_TTL_DNS_RECORDS = 900     # 15m — MX/SPF/DMARC/A/AAAA can change
 
 # ---------------------------------------------------------------------------
 # Regional Internet Registry (RIR) lookups via RDAP
@@ -81,17 +93,20 @@ def parse_rdap_ip(data: dict[str, Any], final_host: str) -> dict[str, Any]:
 
 
 async def _rdap_ip(client: httpx.AsyncClient, ip: str) -> dict[str, Any]:
-    last_exc: Exception | None = None
-    for attempt in range(2):  # rdap.org bootstrap redirects occasionally flake
-        try:
-            resp = await client.get(f"https://rdap.org/ip/{ip}")
-            resp.raise_for_status()
-            return parse_rdap_ip(resp.json(), urlsplit(str(resp.url)).hostname or "")
-        except Exception as exc:  # noqa: BLE001
-            last_exc = exc
-            if attempt == 0:
-                await asyncio.sleep(1)
-    return {"error": f"RDAP registry lookup failed: {type(last_exc).__name__}: {last_exc}"}
+    async def fetch() -> dict[str, Any]:
+        last_exc: Exception | None = None
+        for attempt in range(2):  # rdap.org bootstrap redirects occasionally flake
+            try:
+                resp = await client.get(f"https://rdap.org/ip/{ip}")
+                resp.raise_for_status()
+                return parse_rdap_ip(resp.json(), urlsplit(str(resp.url)).hostname or "")
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if attempt == 0:
+                    await asyncio.sleep(1)
+        return {"error": f"RDAP registry lookup failed: {type(last_exc).__name__}: {last_exc}"}
+
+    return await cache.cached(f"netinfo:rdap_ip:{ip}", _TTL_RDAP_IP, fetch)
 
 # ---------------------------------------------------------------------------
 # ip_lookup
@@ -105,6 +120,17 @@ def _rdns(ip: str) -> str:
         return ""
 
 
+async def rdns_cached(ip: str) -> str:
+    """Cached reverse-DNS lookup, shared by every tool that needs it (ip_lookup,
+    ip_ownership, shared_provider_check, unifi_block) so the same IP is never
+    resolved twice within the cache TTL."""
+
+    async def fetch() -> str:
+        return await asyncio.get_running_loop().run_in_executor(None, _rdns, ip)
+
+    return await cache.cached(f"netinfo:rdns:{ip}", _TTL_RDNS, fetch)
+
+
 async def ip_lookup(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
     ip = str(args.get("ip", "")).strip()
     try:
@@ -114,8 +140,7 @@ async def ip_lookup(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]
     if addr.is_private or addr.is_loopback:
         return {"ip": ip, "note": "private/loopback address — internal hop, not the internet sender"}
 
-    loop = asyncio.get_running_loop()
-    hostname = await loop.run_in_executor(None, _rdns, ip)
+    hostname = await rdns_cached(ip)
 
     out: dict[str, Any] = {"ip": ip, "reverse_dns": hostname or "(none)"}
 
@@ -155,20 +180,26 @@ async def ip_lookup(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]
 
 
 async def _resolve_ips(hostname: str, limit: int) -> list[str]:
-    import dns.asyncresolver
+    async def fetch() -> list[str]:
+        import dns.asyncresolver
 
-    resolver = dns.asyncresolver.Resolver()
-    resolver.lifetime = 10
-    ips: list[str] = []
-    for rtype in ("A", "AAAA"):
-        try:
-            answers = await resolver.resolve(hostname, rtype)
-            ips.extend(str(r) for r in answers)
-        except Exception:  # noqa: BLE001
-            continue
-    # de-duplicate, preserve order
-    seen: set[str] = set()
-    return [ip for ip in ips if not (ip in seen or seen.add(ip))][:limit]
+        resolver = dns.asyncresolver.Resolver()
+        resolver.lifetime = 10
+        ips: list[str] = []
+        for rtype in ("A", "AAAA"):
+            try:
+                answers = await resolver.resolve(hostname, rtype)
+                ips.extend(str(r) for r in answers)
+            except Exception:  # noqa: BLE001
+                continue
+        # de-duplicate, preserve order
+        seen: set[str] = set()
+        return [ip for ip in ips if not (ip in seen or seen.add(ip))]
+
+    # cache the full resolved set regardless of the caller's limit, so a
+    # smaller max_ips call doesn't shadow a larger one's cache entry
+    ips = await cache.cached(f"netinfo:resolve:{hostname}", _TTL_DNS_RECORDS, fetch)
+    return ips[:limit]
 
 
 async def ip_ownership(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
@@ -200,7 +231,7 @@ async def ip_ownership(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, A
                 ownership.append({"ip": ip, "note": "private/loopback — not internet-routable"})
                 continue
             entry = {"ip": ip, **await _rdap_ip(client, ip)}
-            hostname = await asyncio.get_running_loop().run_in_executor(None, _rdns, ip)
+            hostname = await rdns_cached(ip)
             if hostname:
                 entry["reverse_dns"] = hostname
                 shared = providers_db.match_hostname(hostname)
@@ -226,41 +257,57 @@ async def ip_ownership(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, A
 # ---------------------------------------------------------------------------
 
 
+async def _rdap_domain_facts(domain: str) -> dict[str, Any]:
+    """Cached RDAP facts only — never the derived age_days/note, which are
+    recomputed against wall-clock time on every call so a cached entry can't
+    report a stale age as a domain crosses the young-domain threshold."""
+
+    async def fetch() -> dict[str, Any]:
+        try:
+            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+                resp = await client.get(f"https://rdap.org/domain/{domain}")
+            if resp.status_code == 404:
+                return {"registered": False}
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"RDAP lookup failed: {type(exc).__name__}: {exc}"}
+
+        registration = next(
+            (e.get("eventDate") for e in data.get("events", [])
+             if e.get("eventAction") == "registration"),
+            None,
+        )
+        return {
+            "registered": True,
+            "registration_date": registration or "unknown",
+            "registrar": next(
+                (e.get("vcardArray", [None, []])[1][1][3]
+                 for e in data.get("entities", [])
+                 if "registrar" in (e.get("roles") or []) and e.get("vcardArray")),
+                "unknown",
+            ),
+            "statuses": data.get("status", []),
+        }
+
+    return await cache.cached(f"netinfo:rdap_domain:{domain}", _TTL_RDAP_DOMAIN, fetch)
+
+
 async def domain_age(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
     domain = str(args.get("domain", "")).strip().lower().rstrip(".")
     if not domain or "/" in domain or " " in domain:
         return {"error": f"invalid domain {domain!r}"}
 
-    try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            resp = await client.get(f"https://rdap.org/domain/{domain}")
-        if resp.status_code == 404:
-            return {"domain": domain, "registered": False,
-                    "note": "domain not found in RDAP — possibly unregistered or brand-new"}
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as exc:  # noqa: BLE001
-        return {"domain": domain, "error": f"RDAP lookup failed: {type(exc).__name__}: {exc}"}
+    facts = await _rdap_domain_facts(domain)
+    if "error" in facts:
+        return {"domain": domain, **facts}
+    if not facts.get("registered"):
+        return {"domain": domain, "registered": False,
+                "note": "domain not found in RDAP — possibly unregistered or brand-new"}
 
-    registration = None
-    for event in data.get("events", []):
-        if event.get("eventAction") == "registration":
-            registration = event.get("eventDate")
-            break
-
-    out: dict[str, Any] = {
-        "domain": domain,
-        "registered": True,
-        "registration_date": registration or "unknown",
-        "registrar": next(
-            (e.get("vcardArray", [None, []])[1][1][3]
-             for e in data.get("entities", [])
-             if "registrar" in (e.get("roles") or []) and e.get("vcardArray")),
-            "unknown",
-        ),
-        "statuses": data.get("status", []),
-    }
-    if registration:
+    out: dict[str, Any] = {"domain": domain, **facts}
+    registration = facts.get("registration_date")
+    if registration and registration != "unknown":
         try:
             reg_dt = datetime.fromisoformat(registration.replace("Z", "+00:00"))
             age_days = (datetime.now(timezone.utc) - reg_dt).days
@@ -287,33 +334,41 @@ async def _txt_records(resolver, name: str) -> list[str]:
         return []
 
 
-async def dns_verify(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
-    import dns.asyncresolver
+async def _dns_records(domain: str) -> dict[str, Any]:
+    async def fetch() -> dict[str, Any]:
+        import dns.asyncresolver
 
+        resolver = dns.asyncresolver.Resolver()
+        resolver.lifetime = 10
+
+        out: dict[str, Any] = {}
+        try:
+            mx = await resolver.resolve(domain, "MX")
+            out["mx"] = sorted(str(r.exchange).rstrip(".") for r in mx)
+        except Exception as exc:  # noqa: BLE001
+            out["mx"] = []
+            out["mx_error"] = str(exc)
+
+        txt = await _txt_records(resolver, domain)
+        out["spf"] = next((t for t in txt if t.lower().startswith("v=spf1")), "(none)")
+        dmarc_txt = await _txt_records(resolver, f"_dmarc.{domain}")
+        out["dmarc"] = next((t for t in dmarc_txt if t.lower().startswith("v=dmarc1")), "(none)")
+
+        shared_hits = providers_db.match_text(out["spf"])
+        if shared_hits:
+            out["spf_shared_providers"] = shared_hits
+        return out
+
+    return await cache.cached(f"netinfo:dns:{domain}", _TTL_DNS_RECORDS, fetch)
+
+
+async def dns_verify(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
     domain = str(args.get("domain", "")).strip().lower().rstrip(".")
     claimed_brand = str(args.get("claimed_brand_domain", "")).strip().lower().rstrip(".")
     if not domain:
         return {"error": "domain is required"}
 
-    resolver = dns.asyncresolver.Resolver()
-    resolver.lifetime = 10
-
-    out: dict[str, Any] = {"domain": domain}
-    try:
-        mx = await resolver.resolve(domain, "MX")
-        out["mx"] = sorted(str(r.exchange).rstrip(".") for r in mx)
-    except Exception as exc:  # noqa: BLE001
-        out["mx"] = []
-        out["mx_error"] = str(exc)
-
-    txt = await _txt_records(resolver, domain)
-    out["spf"] = next((t for t in txt if t.lower().startswith("v=spf1")), "(none)")
-    dmarc_txt = await _txt_records(resolver, f"_dmarc.{domain}")
-    out["dmarc"] = next((t for t in dmarc_txt if t.lower().startswith("v=dmarc1")), "(none)")
-
-    shared_hits = providers_db.match_text(out["spf"])
-    if shared_hits:
-        out["spf_shared_providers"] = shared_hits
+    out: dict[str, Any] = {"domain": domain, **await _dns_records(domain)}
 
     if claimed_brand:
         aligned = domain == claimed_brand or domain.endswith("." + claimed_brand)

@@ -2,7 +2,6 @@
 enable/disable switches from the admin UI."""
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from ..store.secrets import SecretsBox
@@ -126,9 +125,7 @@ async def _shared_provider_check(args: dict[str, Any], summary: dict[str, Any]) 
     ip = str(args.get("ip", "")).strip()
     domain = str(args.get("domain", "")).strip()
     if ip:
-        hostname = await asyncio.get_running_loop().run_in_executor(
-            None, unifi._safe_rdns, ip
-        )
+        hostname = await netinfo.rdns_cached(ip)
         out["ip"] = ip
         out["reverse_dns"] = hostname or "(none)"
         out["ip_provider"] = providers_db.match_hostname(hostname)

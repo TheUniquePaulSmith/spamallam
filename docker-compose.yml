@@ -119,6 +119,7 @@ services:
       SECRETS_KEY: ${SECRETS_KEY:?set SECRETS_KEY in .env}
       SETUP_TOKEN: ${SETUP_TOKEN:-}
       RSPAMD_URL: http://rspamd:11333
+      REDIS_URL: redis://redis:6379/1
       REINJECT_HOST: postfix
       REINJECT_PORT: "10025"
       SMTP_LISTEN_PORT: "10026"
