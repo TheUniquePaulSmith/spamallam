@@ -16,10 +16,8 @@ Guardrails (defense against over-blocking):
 """
 from __future__ import annotations
 
-import asyncio
 import ipaddress
 import json
-import socket
 import time
 from typing import Any
 
@@ -29,7 +27,7 @@ from ..config import ENV
 from ..store.audit import record as audit_record
 from ..store.files import append_jsonl
 from ..store.secrets import SecretsBox
-from . import providers_db
+from . import netinfo, providers_db
 
 
 def _suggestions_path():
@@ -59,9 +57,7 @@ async def unifi_block(args: dict[str, Any], cfg: dict[str, Any], box: SecretsBox
         return {"refused": True, "reason": "refusing to block private/reserved address space"}
 
     # Guardrail: shared mail providers are never blockable
-    hostname = await asyncio.get_running_loop().run_in_executor(
-        None, lambda: _safe_rdns(ip)
-    )
+    hostname = await netinfo.rdns_cached(ip)
     shared = providers_db.match_hostname(hostname)
     if shared:
         audit_record("spamallam-ai", "unifi_block.refused",
@@ -112,13 +108,6 @@ async def unifi_block(args: dict[str, Any], cfg: dict[str, Any], box: SecretsBox
     append_jsonl(_suggestions_path(), json.dumps(entry, ensure_ascii=False))
     audit_record("spamallam-ai", "unifi_block.executed", entry)
     return {"status": "blocked", "cidr": cidr, "unifi": result}
-
-
-def _safe_rdns(ip: str) -> str:
-    try:
-        return socket.gethostbyaddr(ip)[0]
-    except OSError:
-        return ""
 
 
 async def push_block(cfg: dict[str, Any], box: SecretsBox, cidr: str) -> dict[str, Any]:
