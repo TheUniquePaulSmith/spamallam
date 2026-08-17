@@ -209,13 +209,16 @@ def create_app() -> FastAPI:
     async def ai_save(request: Request, csrf: str = Form(...),
                       enabled: str = Form("off"), failure_mode: str = Form("fail_open"),
                       drop_threshold: float = Form(0.95), timeout_seconds: str = Form(""),
-                      system_prompt: str = Form("")):
+                      system_prompt: str = Form(""), pipeline_order: str = Form("ai_first"),
+                      rspamd_bypass_on_reject: str = Form("")):
         from ..ai.prompt import DEFAULT_SYSTEM_PROMPT
 
         username = security.require_admin(request)
         security.check_csrf(username, csrf)
         if failure_mode not in ("fail_open", "tempfail"):
             raise HTTPException(status_code=400, detail="bad failure_mode")
+        if pipeline_order not in ("ai_first", "rspamd_first"):
+            pipeline_order = "ai_first"
         # Blank -> None (fall back to the AI_TIMEOUT_SECONDS environment default)
         timeout_raw = timeout_seconds.strip()
         if timeout_raw:
@@ -235,6 +238,8 @@ def create_app() -> FastAPI:
             "ai.drop_threshold": max(0.5, min(1.0, drop_threshold)),
             "ai.timeout_seconds": timeout_val,
             "ai.system_prompt": prompt_text,
+            "ai.pipeline_order": pipeline_order,
+            "ai.rspamd_bypass_on_reject": rspamd_bypass_on_reject == "on",
         })
         audit.record_changes(username, changes)
         return RedirectResponse(_flash_url("/settings/ai", "saved", "Saved."), status_code=303)
@@ -469,7 +474,8 @@ def create_app() -> FastAPI:
                            banner_template: str = Form(""),
                            convert_plaintext_to_html: str = Form(""),
                            break_images_scope: str = Form("off"),
-                           footer_template: str = Form("")):
+                           footer_template: str = Form(""),
+                           trigger_on_rspamd_spam: str = Form("")):
         username = security.require_admin(request)
         security.check_csrf(username, csrf)
 
@@ -490,6 +496,7 @@ def create_app() -> FastAPI:
             "marking.convert_plaintext_to_html": convert_plaintext_to_html == "on",
             "marking.break_images.scope": break_images_scope,
             "marking.footer_template": footer_template,
+            "marking.trigger_on_rspamd_spam": trigger_on_rspamd_spam == "on",
         })
         audit.record_changes(username, changes)
         return RedirectResponse(_flash_url("/settings/marking", "saved", "Saved."), status_code=303)
