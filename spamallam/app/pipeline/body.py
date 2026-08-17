@@ -142,13 +142,9 @@ def label_tag(label_key: str) -> str:
     return f"[[spamallam:{label_key}]]"
 
 
-def _classification_footer_html(labels: list[str]) -> str:
+def _classification_footer_html(labels: list[str], template: str) -> str:
     tags = " ".join(label_tag(l) for l in labels)
-    return (
-        '<div style="margin-top:16px;padding-top:8px;border-top:1px solid #ddd;'
-        'font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#888;">'
-        f"SpamAllam: {html_mod.escape(tags)}</div>"
-    )
+    return template.format(tags=html_mod.escape(tags))
 
 
 def _classification_footer_text(labels: list[str]) -> str:
@@ -206,6 +202,10 @@ def _rewrite(raw: bytes, verdict: SpamallamVerdict, marking_cfg: dict[str, Any],
         return raw
 
     banner_html = _render_banner(marking_cfg.get("banner_template", ""), verdict) if do_mark else ""
+    footer_html = (
+        _classification_footer_html(verdict.labels, marking_cfg.get("footer_template", ""))
+        if do_footer else ""
+    )
     convert_plaintext = bool(marking_cfg.get("convert_plaintext_to_html", True))
     touched = False
 
@@ -231,7 +231,7 @@ def _rewrite(raw: bytes, verdict: SpamallamVerdict, marking_cfg: dict[str, Any],
             if do_images:
                 new_content = _break_images(new_content)
             if do_footer:
-                new_content = _insert_before_body_close(new_content, _classification_footer_html(verdict.labels))
+                new_content = _insert_before_body_close(new_content, footer_html)
             if new_content != content:
                 part.set_content(new_content, subtype="html")
                 touched = True
@@ -239,7 +239,7 @@ def _rewrite(raw: bytes, verdict: SpamallamVerdict, marking_cfg: dict[str, Any],
             if do_mark and convert_plaintext:
                 new_html = f"<html><body>{banner_html}<pre>{html_mod.escape(content)}</pre>"
                 if do_footer:
-                    new_html += _classification_footer_html(verdict.labels)
+                    new_html += footer_html
                 new_html += "</body></html>"
                 part.set_content(new_html, subtype="html")
                 touched = True

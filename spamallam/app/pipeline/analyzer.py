@@ -11,11 +11,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..config import ENV
+from ..store import rawlog
 from ..store.settings import SETTINGS
 from ..store.tracelog import MessageTrace
 from . import body
 from . import headers as hdr
 from . import overrides as ovr
+from . import rawcopy
 from . import rspamd_client
 
 # Decision.action values
@@ -31,14 +33,18 @@ class Decision:
     reason: str = ""
 
 
-def _from_header_of(raw: bytes) -> str:
+def _headers_of(raw: bytes) -> dict[str, str]:
     try:
         msg = email.message_from_bytes(
             hdr.split_message(raw)[0], policy=email.policy.default
         )
-        return str(msg.get("From", ""))
+        return {
+            "from": str(msg.get("From", "")),
+            "subject": str(msg.get("Subject", "")),
+            "message_id": str(msg.get("Message-ID", "")),
+        }
     except Exception:  # noqa: BLE001 — malformed headers must not kill the pipeline
-        return ""
+        return {"from": "", "subject": "", "message_id": ""}
 
 
 class Pipeline:
@@ -66,7 +72,10 @@ class Pipeline:
                 headers=[line.decode("utf-8", "replace")[:200] for line in removed[:10]],
             )
 
-        from_header = _from_header_of(cleaned)
+        msg_headers = _headers_of(cleaned)
+        from_header = msg_headers["from"]
+        if hasattr(trace, "data"):
+            trace.data["message"] = msg_headers
         verdict = hdr.SpamallamVerdict()
 
         # 2. Overrides
@@ -141,7 +150,8 @@ class Pipeline:
 
         if ai_drop or rspamd_drop:
             why = "ai high-confidence threat" if ai_drop else f"rspamd reject (score {rres.score:.1f})"
-            trace.finish(DROP, self._verdict_dict(verdict, rres, why))
+            raw_saved = self._save_raw_copy(tagged, trace)
+            trace.finish(DROP, self._verdict_dict(verdict, rres, why, raw_saved))
             return Decision(DROP, reason=why), trace
 
         # 6b. SPAM warning banner / plaintext->HTML / image breaking / classification
@@ -174,8 +184,24 @@ class Pipeline:
         return await analyze_message(cleaned, envelope_from, rcpt_tos, client, trace)
 
     @staticmethod
+    def _save_raw_copy(tagged: bytes, trace: Any) -> bool:
+        """Best-effort attachment-stripped .eml for admin review of a drop.
+        Never blocks/affects the drop decision itself -- storage or parse
+        failures are logged as a trace event and otherwise ignored."""
+        trace_id = getattr(trace, "id", None)
+        trace_day = getattr(trace, "day", None)
+        if not trace_id or not trace_day:
+            return False
+        try:
+            rawlog.save(trace_id, trace_day, rawcopy.strip_for_review(tagged))
+            return True
+        except Exception as exc:  # noqa: BLE001 -- logging aid, must not affect delivery
+            trace.event("raw_save_error", error=f"{type(exc).__name__}: {exc}")
+            return False
+
+    @staticmethod
     def _verdict_dict(verdict: hdr.SpamallamVerdict, rres: rspamd_client.RspamdResult,
-                      drop_reason: str) -> dict[str, Any]:
+                      drop_reason: str, raw_saved: bool = False) -> dict[str, Any]:
         return {
             "ai_verdict": verdict.verdict,
             "ai_confidence": verdict.confidence,
@@ -188,6 +214,7 @@ class Pipeline:
             "rspamd_action": rres.action if rres.ok else f"error: {rres.error}",
             "rspamd_score": rres.score,
             "drop_reason": drop_reason,
+            "raw_saved": raw_saved,
         }
 
 

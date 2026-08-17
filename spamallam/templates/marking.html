@@ -38,6 +38,14 @@ messages, and any rewrite failure silently falls back to delivering the message 
   <label class="row"><input type="radio" name="break_images_scope" value="all_mail"
     {{ 'checked' if cfg.marking.break_images.scope == 'all_mail' }}><span>All delivered mail</span></label>
 
+  <h2>Classification footer</h2>
+  <p class="muted">HTML for the <a href="/settings/classification">classification</a> footer, inserted
+    right before &lt;/body&gt; (or appended if no &lt;/body&gt; tag) when a label applies and
+    placement is set to "footer" or "both". Token: <code>{tags}</code> — the
+    space-separated MailPlus-keyword tags for the labels the AI assigned.</p>
+  <label>Footer HTML template
+    <textarea name="footer_template" rows="4">{{ cfg.marking.footer_template }}</textarea></label>
+
   {% if is_admin %}<button class="primary">Save</button>{% endif %}
 </form>
 {% endblock %}

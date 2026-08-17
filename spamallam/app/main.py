@@ -23,6 +23,7 @@ from .config import ENV
 from .smtp.server import start_smtp_server
 from .store import users as users_store
 from .store.settings import SETTINGS
+from .store import rawlog
 from .store.tracelog import prune
 
 log = logging.getLogger("spamallam")
@@ -129,6 +130,9 @@ async def retention_loop() -> None:
             removed = prune(days)
             if removed:
                 log.info("pruned %d trace files older than %d days", removed, days)
+            removed_raw = rawlog.prune(days)
+            if removed_raw:
+                log.info("pruned %d raw dropped-mail copies older than %d days", removed_raw, days)
         except Exception:  # noqa: BLE001
             log.exception("retention pruning failed")
         await asyncio.sleep(24 * 3600)

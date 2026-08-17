@@ -27,8 +27,10 @@ class MessageTrace:
     def __init__(self, envelope_from: str, rcpt_tos: list[str], client: dict[str, Any]):
         self.id = uuid.uuid4().hex[:16]
         self.started = time.time()
+        self.day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         self.data: dict[str, Any] = {
             "id": self.id,
+            "day": self.day,
             "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "envelope_from": envelope_from,
             "rcpt_tos": rcpt_tos,
@@ -43,8 +45,7 @@ class MessageTrace:
         self.data["action"] = action
         self.data["verdict"] = verdict or {}
         self.data["duration"] = round(time.time() - self.started, 3)
-        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        append_jsonl(_dir() / f"{day}.jsonl", json.dumps(self.data, ensure_ascii=False, default=str))
+        append_jsonl(_dir() / f"{self.day}.jsonl", json.dumps(self.data, ensure_ascii=False, default=str))
 
 
 def read_recent(limit: int = 200, day: str | None = None) -> list[dict]:
