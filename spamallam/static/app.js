@@ -459,3 +459,64 @@ if (tracesList) {
     btn.textContent = raw.hidden ? "Show raw JSON" : "Hide raw JSON";
   });
 }
+
+/* ---- dashboard: poll for newly processed mail and refresh the recent-messages
+   table without a full page reload ---- */
+const recentBody = document.getElementById("recent-messages-body");
+if (recentBody) {
+  const POLL_MS = 8000;
+  // Server-rendered rows don't carry data-id; the first poll seeds knownIds
+  // from its response instead of comparing, so the initial paint never
+  // triggers a spurious "new mail" refresh.
+  let knownIds = new Set();
+  let primed = false;
+
+  function dashboardRowHtml(t) {
+    const msg = t.message || {};
+    const verdict = t.verdict || {};
+    const subject = msg.subject || "(no subject)";
+    return `<tr data-id="${escapeHtml(t.id || "")}">
+      <td>${escapeHtml(t.ts || "")}</td>
+      <td>${escapeHtml(t.envelope_from || "<>")}</td>
+      <td title="${escapeHtml(msg.subject || "")}">${escapeHtml(subject)}</td>
+      <td>${escapeHtml((t.rcpt_tos || []).join(", "))}</td>
+      <td>${escapeHtml(verdict.ai_verdict || "")} ${(verdict.ai_confidence || 0).toFixed(2)}</td>
+      <td>${escapeHtml(verdict.rspamd_action || "")} (${(verdict.rspamd_score || 0).toFixed(1)})</td>
+      <td class="${t.action === "drop" ? "warn" : "ok"}">${escapeHtml(t.action || "")}</td>
+    </tr>`;
+  }
+
+  async function pollRecentMessages() {
+    if (document.hidden) return;
+    let traces;
+    try {
+      ({ traces } = await fetch("/api/traces/recent").then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      }));
+    } catch (err) {
+      return; // transient network/auth blip: try again next tick
+    }
+
+    const table = document.getElementById("recent-messages-table");
+    const empty = document.getElementById("recent-messages-empty");
+    const newestId = traces.length ? traces[0].id : null;
+    const isNew = newestId && !knownIds.has(newestId);
+
+    if (!primed) {
+      knownIds = new Set(traces.map((t) => t.id));
+      primed = true;
+      return;
+    }
+    if (!isNew) return;
+
+    recentBody.innerHTML = traces.map(dashboardRowHtml).join("");
+    knownIds = new Set(traces.map((t) => t.id));
+    if (table) table.hidden = traces.length === 0;
+    if (empty) empty.hidden = traces.length !== 0;
+    showToast("New mail processed — dashboard updated.", "success");
+  }
+
+  setInterval(pollRecentMessages, POLL_MS);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) pollRecentMessages(); });
+}
