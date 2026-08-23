@@ -22,22 +22,25 @@
        {{ users.values()|map(attribute='credentials')|map('length')|sum }} passkeys</p>
   </div>
 </div>
-<div class="card">
+<div class="card" id="recent-messages">
   <h2>Recent messages</h2>
-  {% if traces %}
-  <table>
-    <tr><th>time</th><th>from</th><th>to</th><th>AI verdict</th><th>rspamd</th><th>action</th></tr>
+  <table id="recent-messages-table" {{ 'hidden' if not traces }}>
+    <tr><th>time</th><th>from</th><th>subject</th><th>to</th><th>AI verdict</th><th>rspamd</th><th>action</th></tr>
+    <tbody id="recent-messages-body">
     {% for t in traces %}
+    {% set msg = t.message or {} %}
     <tr>
       <td>{{ t.ts }}</td>
       <td>{{ t.envelope_from or '<>' }}</td>
+      <td title="{{ msg.subject }}">{{ msg.subject or '(no subject)' }}</td>
       <td>{{ t.rcpt_tos|join(', ') }}</td>
       <td>{{ t.verdict.ai_verdict }} {{ '%.2f'|format(t.verdict.ai_confidence or 0) }}</td>
       <td>{{ t.verdict.rspamd_action }} ({{ '%.1f'|format(t.verdict.rspamd_score or 0) }})</td>
       <td class="{{ 'warn' if t.action == 'drop' else 'ok' }}">{{ t.action }}</td>
     </tr>
     {% endfor %}
+    </tbody>
   </table>
-  {% else %}<p class="muted">No messages processed yet.</p>{% endif %}
+  <p class="muted" id="recent-messages-empty" {{ 'hidden' if traces }}>No messages processed yet.</p>
 </div>
 {% endblock %}

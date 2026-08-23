@@ -193,6 +193,11 @@ def create_app() -> FastAPI:
                       cfg=cfg, provider_label=f"{cfg['provider']['type']}/{cfg['provider']['model']}",
                       users=users_store.all_users(), traces=traces)
 
+    @app.get("/api/traces/recent")
+    async def api_traces_recent(request: Request):
+        security.require_user(request)
+        return {"traces": tracelog.read_recent(limit=10)}
+
     # ------------------------------------------------------------ settings: AI
     @app.get("/settings/ai", response_class=HTMLResponse)
     async def ai_page(request: Request):
