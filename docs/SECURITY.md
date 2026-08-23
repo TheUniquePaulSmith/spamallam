@@ -82,7 +82,10 @@ container may eventually be compromised. Goals, in order:
 - Sessions: signed cookies, `Secure`/`HttpOnly`/`SameSite=Strict`, 12 h TTL.
   Every state-changing POST requires a per-user CSRF token. HSTS, CSP
   (`default-src 'self'`), no-sniff, deny-frame headers on every response.
-- Authorization: viewers can read; only admins mutate settings/users.
+- Authorization: only admins mutate settings/users, and only admins can view
+  `/logs` (including raw dropped-message downloads), `/logs/audit`, and
+  `/logs/blocks` — those pages expose full mail content and AI prompt/response
+  text, not just settings, so non-admin invited users cannot see them.
 - Every mutation lands in an append-only audit log (who, when, what,
   old → new) with secret values redacted at write time.
 
@@ -107,6 +110,11 @@ container may eventually be compromised. Goals, in order:
 - **No link activation**: neither web tool will ever fetch a URL that appears
   in the analyzed message (exact URL *and* same-host matches are refused) —
   only URLs from search results or known brand domains.
+- **No SSRF against internal services**: `web_fetch` resolves its target
+  before fetching and refuses private/loopback/link-local/multicast/reserved
+  addresses (same class of check `ip_lookup`/`ip_ownership` already apply),
+  so a prompt-injection payload cannot induce the model into fetching an
+  internal service (rspamd, redis, cloud metadata endpoints, etc.).
 - **Over-blocking**: unifi_block refuses shared-mail-provider IPs and private
   ranges, caps CIDR rollup at /24, defaults to suggest-only, and audit-logs
   every attempt.

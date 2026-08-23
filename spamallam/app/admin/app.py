@@ -580,7 +580,7 @@ def create_app() -> FastAPI:
     # ------------------------------------------------------------------- logs
     @app.get("/logs", response_class=HTMLResponse)
     async def logs_page(request: Request, day: str = "", q: str = ""):
-        username = security.require_user(request)
+        username = security.require_admin(request)
         traces = tracelog.read_recent(limit=200, day=day or None)
         if q:
             needle = q.lower()
@@ -593,7 +593,7 @@ def create_app() -> FastAPI:
 
     @app.get("/logs/raw/{day}/{trace_id}")
     async def logs_raw(request: Request, day: str, trace_id: str):
-        security.require_user(request)
+        security.require_admin(request)
         if not _DAY_RE.match(day) or not _TRACE_ID_RE.match(trace_id):
             raise HTTPException(status_code=400, detail="bad id")
         data = rawlog.read(trace_id, day)
@@ -622,12 +622,12 @@ def create_app() -> FastAPI:
 
     @app.get("/logs/audit", response_class=HTMLResponse)
     async def audit_page(request: Request):
-        username = security.require_user(request)
+        username = security.require_admin(request)
         return render(request, "audit.html", username, entries=audit.tail())
 
     @app.get("/logs/blocks", response_class=HTMLResponse)
     async def blocks_page(request: Request):
-        username = security.require_user(request)
+        username = security.require_admin(request)
         return render(request, "blocks.html", username, suggestions=read_suggestions())
 
     # ------------------------------------------------------------------ users
