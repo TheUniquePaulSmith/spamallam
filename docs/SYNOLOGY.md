@@ -140,6 +140,39 @@ MailPlus must accept mail for your domains from `DOCKER_SUBNET`:
   (MailPlus Server → **Security** → Spam) to avoid double-scoring, or keep it —
   double-scanning is safe, just redundant.
 
+### MailPlus's own SPF/DKIM/ARC checks will always fail for relayed mail
+
+If MailPlus performs its own inbound SPF/DKIM/DMARC/anti-spoofing validation
+(**Mail Delivery → Security** tab — not the outbound-signing toggle of the
+same name), it re-runs those checks against the connection it actually
+sees — from spamallam-postfix on `DOCKER_SUBNET`, not the sender's real MTA.
+Two distinct effects, both expected and neither fixable by tweaking the setup
+further:
+
+- **SPF always softfails/fails.** SPF validates the *immediately connecting*
+  IP against the envelope-from domain's SPF record. That connecting IP is now
+  your internal relay, which no sender's SPF record will ever authorize — this
+  happens for every relayed message from every SPF-publishing domain,
+  regardless of whether the original sender was legitimate. rspamd already
+  did the real check against the true origin (see `R_SPF_ALLOW` /
+  `DMARC_POLICY_ALLOW` in `X-Spamd-Result`).
+- **ARC/DKIM reject on any message spamallam body-rewrites.** The
+  classification footer and SPAM banner (`app/pipeline/body.py`) intentionally
+  modify the body after the original sender signed it, so the original
+  DKIM/ARC body hash genuinely no longer matches — this isn't a
+  misconfiguration, it's a cryptographically correct "fail" for bytes that
+  were legitimately altered downstream of the signature. You cannot have both
+  MailPlus-side ARC validation passing *and* body-rewrite features (footer
+  tags, banners) enabled for the same message.
+
+**Fix**: MailPlus Server → **Mail Delivery** → **Security** → add
+`DOCKER_SUBNET` (default `172.28.0.0/24`) to the trusted/allowed source list
+so it skips inbound SPF/DKIM/DMARC/anti-spoofing re-validation for mail
+arriving from the gateway. Authentication trust belongs upstream, at
+spamallam/rspamd, which signs its verdict into `X-SpamAllam-*`/
+`X-Spamd-Result` before this hop — see
+[SECURITY.md](SECURITY.md#header-trust-chain).
+
 ## 2. Deploy with Portainer
 
 1. Portainer → Stacks → **Add stack** → Repository (point at this git repo) or

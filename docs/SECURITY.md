@@ -52,6 +52,53 @@ container may eventually be compromised. Goals, in order:
   caps postfix's privilege-separated design needs and the one `NET_ADMIN`
   grant described above, `no-new-privileges`.
 
+### DNSBL lookups can get blocked by a handful of big public resolvers
+
+postscreen's weighted DNSBL checks (`POSTSCREEN_DNSBL_SITES`) query
+`zen.spamhaus.org` from whatever resolver the postfix container ends up
+with — normally Docker's embedded resolver, forwarding to whatever DNS the
+docker host itself uses. Spamhaus specifically fingerprints and blocks free
+DNSBL-zone queries from a short list of massive, anonymously-shared anycast
+resolvers — Google `8.8.8.8`, Cloudflare `1.1.1.1`, Quad9, OpenDNS and
+similar — because millions of unrelated users share the same querying IP,
+making per-user abuse impossible to attribute. It does *not* generally
+target ordinary ISP-provided resolvers, which are shared only among that
+ISP's own customers. If your resolver is one of the blocked ones, Spamhaus
+returns `127.255.255.254` ("query via public/open resolver") for every
+lookup instead of a real answer, and postscreen scores that return code like
+a genuine listing — rejecting legitimate senders. Observed in practice: a
+Gmail MX hard-rejected with `550 5.7.1 ... blocked using zen.spamhaus.org`,
+while a different Gmail IP passed minutes later because postscreen already
+had a cached verdict for it and skipped a fresh lookup. This isn't a spam
+signal; it's Spamhaus refusing free service to that resolver.
+
+Quick check for whether your current resolver is affected — Spamhaus keeps a
+standing positive-control test entry (`127.0.0.2` should always be listed):
+
+```bash
+dig +short 2.0.0.127.zen.spamhaus.org @<resolver-ip>
+```
+
+`127.0.0.2` back means that resolver is fine for this. `127.255.255.254`
+means it's blocked (directly, or because it's silently forwarding to one of
+the big public services above).
+
+**Fix**: register for Spamhaus's free DQS (Data Query Service) and swap in
+your personalized zone, which isn't subject to the public-resolver
+restriction regardless of which DNS server the query transits:
+
+```
+POSTSCREEN_DNSBL_SITES=<your-dqs-key>.zen.dq.spamhaus.net*3 bl.spamcop.net*2
+```
+
+Pointing the container at a resolver that isn't one of the blocked ones —
+your ISP's own resolver, a router/UDM/Pi-hole, or any recursive resolver you
+run yourself — also works and needs no registration. Set
+`POSTFIX_DNS_SERVERS` (comma-separated IPs) in `.env` —
+`postfix/entrypoint.sh` writes it into the container's `/etc/resolv.conf`
+before postfix starts. Leave it empty to keep Docker's default resolver
+behavior.
+
 ## Header trust chain
 
 - On receipt, spamallam strips every inbound `X-SpamAllam-*`, `X-Spam-*`,
