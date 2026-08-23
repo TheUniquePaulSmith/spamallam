@@ -67,20 +67,22 @@ services:
     # No `ports:` — postfix listens on :2525/:2587 (postfix/templates/master.cf.tmpl)
     # directly on POSTFIX_MACVLAN_IP; nothing to publish/NAT via the docker host.
     #
-    # Want to override the DNS resolver postfix's embedded Docker resolver
-    # forwards external (non-container) queries to -- e.g. because your
-    # default upstream is one of a handful of resolvers Spamhaus's free
-    # DNSBL zone blocks (see docs/SECURITY.md)? Uncomment and edit the two
-    # lines below. This is deliberately NOT an env-var-driven setting like
-    # everything else in this file: Compose's variable interpolation
-    # substitutes into an already-typed YAML scalar, so `${VAR:-default}`
-    # can't express "list field, absent when VAR is unset" -- every default
-    # tried (empty string, literal "[]") ends up as an invalid one-element
-    # list instead of a real empty one, which breaks container creation for
-    # every deployment that leaves the var unset. Confirmed against a real
-    # deployment via `docker compose config` before landing on this approach.
-    # dns:
-    #   - 173.44.120.52
+    # Required: the external (non-container) forwarding target for postfix's
+    # embedded Docker resolver, used specifically by postscreen's DNSBL
+    # checks (POSTSCREEN_DNSBL_SITES below) -- Spamhaus's free zone rejects
+    # queries from a handful of massive, heavily-shared public resolvers
+    # (Google 8.8.8.8, Cloudflare 1.1.1.1, Quad9, OpenDNS) with an error code
+    # postscreen then wrongly scores as a real listing, hard-rejecting
+    # legitimate mail. See docs/SECURITY.md. This is a plain required var
+    # (not optional/defaulted) because Compose's variable interpolation
+    # substitutes into an already-typed YAML scalar, so no `${VAR:-default}`
+    # expression can express "list field, absent when VAR is unset" -- every
+    # default tried (empty string, literal "[]") ended up as an invalid
+    # one-element list instead of a real empty one, breaking container
+    # creation whenever the var was left unset. Confirmed against a real
+    # deployment via `docker compose config` before landing on this design.
+    dns:
+      - ${POSTFIX_DNS_SERVER:?set POSTFIX_DNS_SERVER in .env}
     environment:
       MAIL_HOSTNAME: ${MAIL_HOSTNAME}
       MAIL_DOMAINS: ${MAIL_DOMAINS:?set MAIL_DOMAINS in .env}
