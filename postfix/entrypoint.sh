@@ -11,26 +11,6 @@ SELF_SIGNED_DIR=/etc/postfix/tls-selfsigned
 log() { echo "[entrypoint] $*"; }
 
 # ---------------------------------------------------------------------------
-# Optional DNS resolver override (POSTFIX_DNS_SERVERS, comma-separated IPs).
-# Default Docker behaviour (embedded resolver forwarding to whatever DNS the
-# docker host uses) is left alone when unset. Set this if that default ends
-# up being one of a handful of massive, anonymously-shared public resolvers
-# (Google 8.8.8.8, Cloudflare 1.1.1.1, Quad9, OpenDNS) -- Spamhaus's free
-# DNSBL zone (POSTSCREEN_DNSBL_SITES) rejects queries from those with a
-# "127.255.255.254 query via public/open resolver" response, which postscreen
-# then treats as a real listing and wrongly rejects legitimate senders.
-# Ordinary ISP-provided resolvers are usually NOT affected. See
-# docs/SECURITY.md.
-# ---------------------------------------------------------------------------
-if [ -n "${POSTFIX_DNS_SERVERS:-}" ]; then
-  : > /etc/resolv.conf
-  for ns in $(echo "$POSTFIX_DNS_SERVERS" | tr ',' ' '); do
-    echo "nameserver $ns" >> /etc/resolv.conf
-  done
-  log "using custom DNS resolver(s): ${POSTFIX_DNS_SERVERS}"
-fi
-
-# ---------------------------------------------------------------------------
 # Route inbound-reply traffic out via the macvlan gateway (mailwan), not
 # whatever network Docker happens to pick as the default route. Without this,
 # replies to a connection that arrived on POSTFIX_MACVLAN_IP can leave via a
