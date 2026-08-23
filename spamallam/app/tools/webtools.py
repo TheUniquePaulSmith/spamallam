@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import html
+import ipaddress
 import re
+import socket
 import urllib.parse
 from typing import Any
 
@@ -34,6 +36,36 @@ def _host(url: str) -> str:
         return urllib.parse.urlsplit(url).hostname or ""
     except ValueError:
         return ""
+
+
+def _is_unsafe_address(addr: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return True
+    return (
+        ip.is_private or ip.is_loopback or ip.is_link_local
+        or ip.is_multicast or ip.is_reserved or ip.is_unspecified
+    )
+
+
+async def _resolves_to_unsafe_address(host: str) -> bool:
+    """True if `host` (hostname or IP literal) is, or resolves to, a
+    private/loopback/link-local/multicast/reserved address — SSRF guard for
+    web_fetch, which (unlike netinfo.py's lookups) actually contacts the
+    target. Fails closed: unresolvable hosts are treated as unsafe."""
+    try:
+        ipaddress.ip_address(host)
+        return _is_unsafe_address(host)
+    except ValueError:
+        pass
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.run_in_executor(None, socket.getaddrinfo, host, None)
+    except OSError:
+        return True
+    addrs = {info[4][0] for info in infos}
+    return not addrs or any(_is_unsafe_address(a) for a in addrs)
 
 
 def forbidden_reason(url: str, summary: dict[str, Any]) -> str | None:
@@ -161,6 +193,11 @@ async def web_fetch(args: dict[str, Any], cfg: dict[str, Any], summary: dict[str
     reason = forbidden_reason(url, summary)
     if reason:
         return {"refused": True, "url": url, "reason": reason}
+
+    host = _host(url)
+    if not host or await _resolves_to_unsafe_address(host):
+        return {"refused": True, "url": url,
+                "reason": "target host is private/internal — refused (SSRF guard)"}
 
     wcfg = cfg["tools"]["web_fetch"]
     backend = (wcfg.get("backend") or "curl").lower()

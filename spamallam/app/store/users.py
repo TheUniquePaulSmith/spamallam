@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import secrets
 import time
 from pathlib import Path
@@ -167,7 +168,10 @@ def consume_token(token: str) -> dict[str, Any] | None:
     tokens = data.get("tokens", [])
     h = _token_hash(token)
     now = int(time.time())
-    match = next((t for t in tokens if t["hash"] == h and t.get("expires", 0) > now), None)
+    match = next(
+        (t for t in tokens if hmac.compare_digest(t["hash"], h) and t.get("expires", 0) > now),
+        None,
+    )
     if match is None:
         return None
     data["tokens"] = [t for t in tokens if t["hash"] != h]
@@ -181,7 +185,8 @@ def peek_token(token: str) -> dict[str, Any] | None:
     h = _token_hash(token)
     now = int(time.time())
     return next(
-        (t for t in data.get("tokens", []) if t["hash"] == h and t.get("expires", 0) > now),
+        (t for t in data.get("tokens", [])
+         if hmac.compare_digest(t["hash"], h) and t.get("expires", 0) > now),
         None,
     )
 
@@ -194,7 +199,7 @@ def bootstrap_setup_token() -> str | None:
     if ENV.setup_token:
         data = read_yaml(_tokens_path(), {}) or {}
         h = _token_hash(ENV.setup_token)
-        if not any(t["hash"] == h for t in data.get("tokens", [])):
+        if not any(hmac.compare_digest(t["hash"], h) for t in data.get("tokens", [])):
             data.setdefault("tokens", []).append({
                 "hash": h,
                 "username": None,
