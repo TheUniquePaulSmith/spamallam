@@ -78,7 +78,15 @@ services:
     # Leave POSTFIX_DNS_SERVER unset to keep Docker's default forwarding
     # target. See docs/SECURITY.md for why you'd set this (Spamhaus's
     # DNSBL free zone blocking a handful of heavily-shared public resolvers).
-    dns: ${POSTFIX_DNS_SERVER:-}
+    #
+    # Default must be the literal empty-list "[]", not an empty scalar --
+    # `dns: ${VAR:-}` renders as `dns: ""` when VAR is unset, and Compose
+    # wraps that empty scalar into a one-element list `dns: [""]` rather than
+    # treating it as absent, which is an invalid DNS entry and breaks
+    # container creation for every default (no-override) deployment.
+    # Confirmed via `docker compose config` against a real .env with the var
+    # unset before this fix landed.
+    dns: ${POSTFIX_DNS_SERVER:-[]}
     environment:
       MAIL_HOSTNAME: ${MAIL_HOSTNAME}
       MAIL_DOMAINS: ${MAIL_DOMAINS:?set MAIL_DOMAINS in .env}
