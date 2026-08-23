@@ -28,14 +28,13 @@
     <tr><th>time</th><th>from</th><th>subject</th><th>to</th><th>AI verdict</th><th>rspamd</th><th>action</th></tr>
     <tbody id="recent-messages-body">
     {% for t in traces %}
-    {% set msg = t.message or {} %}
     <tr>
-      <td>{{ t.ts }}</td>
-      <td>{{ t.envelope_from or '<>' }}</td>
-      <td title="{{ msg.subject }}">{{ msg.subject or '(no subject)' }}</td>
-      <td>{{ t.rcpt_tos|join(', ') }}</td>
-      <td>{{ t.verdict.ai_verdict }} {{ '%.2f'|format(t.verdict.ai_confidence or 0) }}</td>
-      <td>{{ t.verdict.rspamd_action }} ({{ '%.1f'|format(t.verdict.rspamd_score or 0) }})</td>
+      <td>{{ t.time }}</td>
+      <td>{{ t.envelope_from }}</td>
+      <td title="{{ t.subject }}">{{ t.subject }}</td>
+      <td>{{ t.to }}</td>
+      <td>{{ t.ai_verdict }}</td>
+      <td>{{ t.rspamd }}</td>
       <td class="{{ 'warn' if t.action == 'drop' else 'ok' }}">{{ t.action }}</td>
     </tr>
     {% endfor %}

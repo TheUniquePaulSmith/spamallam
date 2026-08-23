@@ -188,7 +188,7 @@ def create_app() -> FastAPI:
     async def dashboard(request: Request):
         username = security.require_user(request)
         cfg = SETTINGS.all()
-        traces = tracelog.read_recent(limit=10)
+        traces = tracelog.read_recent_summary(limit=10)
         return render(request, "dashboard.html", username,
                       cfg=cfg, provider_label=f"{cfg['provider']['type']}/{cfg['provider']['model']}",
                       users=users_store.all_users(), traces=traces)
@@ -196,7 +196,7 @@ def create_app() -> FastAPI:
     @app.get("/api/traces/recent")
     async def api_traces_recent(request: Request):
         security.require_user(request)
-        return {"traces": tracelog.read_recent(limit=10)}
+        return {"traces": tracelog.read_recent_summary(limit=10)}
 
     # ------------------------------------------------------------ settings: AI
     @app.get("/settings/ai", response_class=HTMLResponse)
