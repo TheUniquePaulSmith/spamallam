@@ -132,8 +132,10 @@ macvlan involved. It is *not* `POSTFIX_MACVLAN_IP`.
 
 MailPlus must accept mail for your domains from `DOCKER_SUBNET`:
 
-- MailPlus Server → **Security** → make sure the NAS/docker source is not
-  greylisted/rate-limited.
+- Add `DOCKER_SUBNET` to MailPlus's allow list so the NAS/docker source is
+  never greylisted/rate-limited/re-authenticated — see "MailPlus's own
+  SPF/DKIM/ARC checks will always fail for relayed mail" below for the exact
+  steps.
 - MailPlus Server → **Service** → SMTP: no authentication is needed for mail
   addressed *to* your served domains; verify a test mail is accepted.
 - Since rspamd runs in this stack, disable MailPlus's own spam/rspamd engine
@@ -165,11 +167,15 @@ further:
   MailPlus-side ARC validation passing *and* body-rewrite features (footer
   tags, banners) enabled for the same message.
 
-**Fix**: MailPlus Server → **Mail Delivery** → **Security** → add
-`DOCKER_SUBNET` (default `172.28.0.0/24`) to the trusted/allowed source list
-so it skips inbound SPF/DKIM/DMARC/anti-spoofing re-validation for mail
-arriving from the gateway. Authentication trust belongs upstream, at
-spamallam/rspamd, which signs its verdict into `X-SpamAllam-*`/
+**Fix**: MailPlus Server → **Mail Delivery** → **Security** →
+**Block/Allow List** → **Allow list** tab → **Create** → give it a name (e.g.
+`Spamallam`) and set **Rule** to `DOCKER_SUBNET` in CIDR form (default
+`172.28.0.0/24`) → **OK**, then **OK** on the Block/Allow List dialog. The
+allow list takes precedence over the block list, and — per Synology's own
+help text on that dialog — this is also where the checks in "Trust the
+gateway as an internal relay" above (greylisting/rate-limiting exemptions)
+get applied, so one entry covers both. Authentication trust belongs upstream,
+at spamallam/rspamd, which signs its verdict into `X-SpamAllam-*`/
 `X-Spamd-Result` before this hop — see
 [SECURITY.md](SECURITY.md#header-trust-chain).
 
