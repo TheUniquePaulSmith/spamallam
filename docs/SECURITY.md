@@ -93,25 +93,48 @@ POSTSCREEN_DNSBL_SITES=<your-dqs-key>.zen.dq.spamhaus.net*3 bl.spamcop.net*2
 
 Pointing the container at a resolver that isn't one of the blocked ones —
 your ISP's own resolver, a router/UDM/Pi-hole, or any recursive resolver you
-run yourself — also works and needs no registration. Set `POSTFIX_DNS_SERVER`
-(one IP) in `.env`; `docker-compose.yml` applies it via Compose's `dns:`
-service key on the postfix service. Leave it empty to keep Docker's default
-forwarding target.
+run yourself — also works and needs no registration. Uncomment and edit the
+`dns:` block already present (commented out) on the postfix service in
+`docker-compose.yml`:
 
-**Do not** implement this by rewriting `/etc/resolv.conf` from inside the
-running container instead — an earlier revision of this doc recommended
-exactly that (a `POSTFIX_DNS_SERVERS` var applied at runtime in
-`postfix/entrypoint.sh`), and it caused every relayed message to hard-bounce
-(`5.4.4 Name does not resolve`). Overwriting `/etc/resolv.conf` discards the
-`nameserver 127.0.0.11` line Docker injects for its embedded resolver, which
-is what lets postfix resolve the `spamallam` service name its
-`content_filter` targets (`postfix/templates/master.cf.tmpl`). Compose's
-`dns:` key is different: it's a container-creation-time setting that
-reconfigures what the embedded resolver forwards *external* queries to,
-while `/etc/resolv.conf` inside the container keeps pointing at
-`127.0.0.11` either way — confirmed by comparing `docker run --network
-spamallam_mailnet ... cat /etc/resolv.conf` with and without `--dns` on a
-throwaway container: identical output (`nameserver 127.0.0.11`) both times.
+```yaml
+  postfix:
+    ...
+    dns:
+      - 173.44.120.52   # your resolver's IP
+```
+
+This is Compose's own `dns:` service key, applied at container-creation
+time — it reconfigures what postfix's embedded Docker resolver forwards
+*external* (non-container) queries to, while `/etc/resolv.conf` inside the
+container keeps pointing at `127.0.0.11` either way, so container-name
+resolution (the `spamallam` name postfix's `content_filter` targets, per
+`postfix/templates/master.cf.tmpl`) stays intact. Confirmed by comparing
+`docker run --network spamallam_mailnet ... cat /etc/resolv.conf` with and
+without `--dns` on a throwaway container: identical output (`nameserver
+127.0.0.11`) both times.
+
+This is deliberately a direct `docker-compose.yml` edit, not an env var like
+everything else in this stack. Two earlier attempts at an env-var-driven
+version both broke the *default* (no-override) deployment path in different
+ways, both caught via `docker compose config` against a real `.env` before
+shipping:
+
+- Rewriting `/etc/resolv.conf` from inside the running container (a
+  `POSTFIX_DNS_SERVERS` var applied at runtime in `postfix/entrypoint.sh`)
+  discards the `nameserver 127.0.0.11` line entirely, breaking `spamallam`
+  resolution and hard-bouncing every relayed message (`5.4.4 Name does not
+  resolve`) — regardless of whether the var was set.
+- Applying it via Compose's `dns:` key with `${POSTFIX_DNS_SERVER:-default}`
+  interpolation: Compose substitutes into an already-typed YAML scalar
+  rather than raw text, so there's no default expression that renders as a
+  true empty list when the var is unset — both an empty string and a literal
+  `"[]"` default ended up wrapped into a one-element list containing an
+  invalid entry (`[""]` / `["[]"]`), which breaks container creation for
+  every deployment that leaves the var unset, not just ones that set it.
+
+A direct, always-valid, commented-out-by-default block in the tracked
+`docker-compose.yml` sidesteps both failure modes entirely.
 
 ## Header trust chain
 

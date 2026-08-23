@@ -67,26 +67,20 @@ services:
     # No `ports:` — postfix listens on :2525/:2587 (postfix/templates/master.cf.tmpl)
     # directly on POSTFIX_MACVLAN_IP; nothing to publish/NAT via the docker host.
     #
-    # Optional external-DNS override (POSTFIX_DNS_SERVER, one IP). This is a
-    # container-creation-time setting, not something postfix/entrypoint.sh can
-    # apply at runtime -- Docker's embedded resolver (127.0.0.11, which is
-    # what lets postfix resolve the `spamallam` service name below) keeps
-    # answering container-name queries regardless of this setting; it only
-    # changes what that embedded resolver forwards non-container queries to.
-    # Confirmed empirically: `docker run --network spamallam_mailnet --dns
-    # <ip> ... cat /etc/resolv.conf` still shows `nameserver 127.0.0.11`.
-    # Leave POSTFIX_DNS_SERVER unset to keep Docker's default forwarding
-    # target. See docs/SECURITY.md for why you'd set this (Spamhaus's
-    # DNSBL free zone blocking a handful of heavily-shared public resolvers).
-    #
-    # Default must be the literal empty-list "[]", not an empty scalar --
-    # `dns: ${VAR:-}` renders as `dns: ""` when VAR is unset, and Compose
-    # wraps that empty scalar into a one-element list `dns: [""]` rather than
-    # treating it as absent, which is an invalid DNS entry and breaks
-    # container creation for every default (no-override) deployment.
-    # Confirmed via `docker compose config` against a real .env with the var
-    # unset before this fix landed.
-    dns: ${POSTFIX_DNS_SERVER:-[]}
+    # Want to override the DNS resolver postfix's embedded Docker resolver
+    # forwards external (non-container) queries to -- e.g. because your
+    # default upstream is one of a handful of resolvers Spamhaus's free
+    # DNSBL zone blocks (see docs/SECURITY.md)? Uncomment and edit the two
+    # lines below. This is deliberately NOT an env-var-driven setting like
+    # everything else in this file: Compose's variable interpolation
+    # substitutes into an already-typed YAML scalar, so `${VAR:-default}`
+    # can't express "list field, absent when VAR is unset" -- every default
+    # tried (empty string, literal "[]") ends up as an invalid one-element
+    # list instead of a real empty one, which breaks container creation for
+    # every deployment that leaves the var unset. Confirmed against a real
+    # deployment via `docker compose config` before landing on this approach.
+    # dns:
+    #   - 173.44.120.52
     environment:
       MAIL_HOSTNAME: ${MAIL_HOSTNAME}
       MAIL_DOMAINS: ${MAIL_DOMAINS:?set MAIL_DOMAINS in .env}
