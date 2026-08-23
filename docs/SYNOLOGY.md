@@ -132,13 +132,52 @@ macvlan involved. It is *not* `POSTFIX_MACVLAN_IP`.
 
 MailPlus must accept mail for your domains from `DOCKER_SUBNET`:
 
-- MailPlus Server → **Security** → make sure the NAS/docker source is not
-  greylisted/rate-limited.
+- Add `DOCKER_SUBNET` to MailPlus's allow list so the NAS/docker source is
+  never greylisted/rate-limited/re-authenticated — see "MailPlus's own
+  SPF/DKIM/ARC checks will always fail for relayed mail" below for the exact
+  steps.
 - MailPlus Server → **Service** → SMTP: no authentication is needed for mail
   addressed *to* your served domains; verify a test mail is accepted.
 - Since rspamd runs in this stack, disable MailPlus's own spam/rspamd engine
   (MailPlus Server → **Security** → Spam) to avoid double-scoring, or keep it —
   double-scanning is safe, just redundant.
+
+### MailPlus's own SPF/DKIM/ARC checks will always fail for relayed mail
+
+If MailPlus performs its own inbound SPF/DKIM/DMARC/anti-spoofing validation
+(**Mail Delivery → Security** tab — not the outbound-signing toggle of the
+same name), it re-runs those checks against the connection it actually
+sees — from spamallam-postfix on `DOCKER_SUBNET`, not the sender's real MTA.
+Two distinct effects, both expected and neither fixable by tweaking the setup
+further:
+
+- **SPF always softfails/fails.** SPF validates the *immediately connecting*
+  IP against the envelope-from domain's SPF record. That connecting IP is now
+  your internal relay, which no sender's SPF record will ever authorize — this
+  happens for every relayed message from every SPF-publishing domain,
+  regardless of whether the original sender was legitimate. rspamd already
+  did the real check against the true origin (see `R_SPF_ALLOW` /
+  `DMARC_POLICY_ALLOW` in `X-Spamd-Result`).
+- **ARC/DKIM reject on any message spamallam body-rewrites.** The
+  classification footer and SPAM banner (`app/pipeline/body.py`) intentionally
+  modify the body after the original sender signed it, so the original
+  DKIM/ARC body hash genuinely no longer matches — this isn't a
+  misconfiguration, it's a cryptographically correct "fail" for bytes that
+  were legitimately altered downstream of the signature. You cannot have both
+  MailPlus-side ARC validation passing *and* body-rewrite features (footer
+  tags, banners) enabled for the same message.
+
+**Fix**: MailPlus Server → **Mail Delivery** → **Security** →
+**Block/Allow List** → **Allow list** tab → **Create** → give it a name (e.g.
+`Spamallam`) and set **Rule** to `DOCKER_SUBNET` in CIDR form (default
+`172.28.0.0/24`) → **OK**, then **OK** on the Block/Allow List dialog. The
+allow list takes precedence over the block list, and — per Synology's own
+help text on that dialog — this is also where the checks in "Trust the
+gateway as an internal relay" above (greylisting/rate-limiting exemptions)
+get applied, so one entry covers both. Authentication trust belongs upstream,
+at spamallam/rspamd, which signs its verdict into `X-SpamAllam-*`/
+`X-Spamd-Result` before this hop — see
+[SECURITY.md](SECURITY.md#header-trust-chain).
 
 ## 2. Deploy with Portainer
 
