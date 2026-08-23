@@ -93,11 +93,25 @@ POSTSCREEN_DNSBL_SITES=<your-dqs-key>.zen.dq.spamhaus.net*3 bl.spamcop.net*2
 
 Pointing the container at a resolver that isn't one of the blocked ones —
 your ISP's own resolver, a router/UDM/Pi-hole, or any recursive resolver you
-run yourself — also works and needs no registration. Set
-`POSTFIX_DNS_SERVERS` (comma-separated IPs) in `.env` —
-`postfix/entrypoint.sh` writes it into the container's `/etc/resolv.conf`
-before postfix starts. Leave it empty to keep Docker's default resolver
-behavior.
+run yourself — also works and needs no registration. Set `POSTFIX_DNS_SERVER`
+(one IP) in `.env`; `docker-compose.yml` applies it via Compose's `dns:`
+service key on the postfix service. Leave it empty to keep Docker's default
+forwarding target.
+
+**Do not** implement this by rewriting `/etc/resolv.conf` from inside the
+running container instead — an earlier revision of this doc recommended
+exactly that (a `POSTFIX_DNS_SERVERS` var applied at runtime in
+`postfix/entrypoint.sh`), and it caused every relayed message to hard-bounce
+(`5.4.4 Name does not resolve`). Overwriting `/etc/resolv.conf` discards the
+`nameserver 127.0.0.11` line Docker injects for its embedded resolver, which
+is what lets postfix resolve the `spamallam` service name its
+`content_filter` targets (`postfix/templates/master.cf.tmpl`). Compose's
+`dns:` key is different: it's a container-creation-time setting that
+reconfigures what the embedded resolver forwards *external* queries to,
+while `/etc/resolv.conf` inside the container keeps pointing at
+`127.0.0.11` either way — confirmed by comparing `docker run --network
+spamallam_mailnet ... cat /etc/resolv.conf` with and without `--dns` on a
+throwaway container: identical output (`nameserver 127.0.0.11`) both times.
 
 ## Header trust chain
 

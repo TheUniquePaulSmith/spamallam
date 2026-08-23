@@ -66,6 +66,19 @@ services:
       mailnet: {}
     # No `ports:` — postfix listens on :2525/:2587 (postfix/templates/master.cf.tmpl)
     # directly on POSTFIX_MACVLAN_IP; nothing to publish/NAT via the docker host.
+    #
+    # Optional external-DNS override (POSTFIX_DNS_SERVER, one IP). This is a
+    # container-creation-time setting, not something postfix/entrypoint.sh can
+    # apply at runtime -- Docker's embedded resolver (127.0.0.11, which is
+    # what lets postfix resolve the `spamallam` service name below) keeps
+    # answering container-name queries regardless of this setting; it only
+    # changes what that embedded resolver forwards non-container queries to.
+    # Confirmed empirically: `docker run --network spamallam_mailnet --dns
+    # <ip> ... cat /etc/resolv.conf` still shows `nameserver 127.0.0.11`.
+    # Leave POSTFIX_DNS_SERVER unset to keep Docker's default forwarding
+    # target. See docs/SECURITY.md for why you'd set this (Spamhaus's
+    # DNSBL free zone blocking a handful of heavily-shared public resolvers).
+    dns: ${POSTFIX_DNS_SERVER:-}
     environment:
       MAIL_HOSTNAME: ${MAIL_HOSTNAME}
       MAIL_DOMAINS: ${MAIL_DOMAINS:?set MAIL_DOMAINS in .env}
@@ -82,7 +95,6 @@ services:
       SMTPD_CLIENT_CONNECTION_RATE_LIMIT: ${SMTPD_CLIENT_CONNECTION_RATE_LIMIT:-30}
       POSTSCREEN_DNSBL_SITES: ${POSTSCREEN_DNSBL_SITES:-zen.spamhaus.org*3 bl.spamcop.net*2}
       POSTSCREEN_DNSBL_THRESHOLD: ${POSTSCREEN_DNSBL_THRESHOLD:-3}
-      POSTFIX_DNS_SERVERS: ${POSTFIX_DNS_SERVERS:-}
       TLS_CERT_NAME: ${TLS_CERT_NAME:-${MAIL_HOSTNAME}}
       DOCKER_SUBNET: ${DOCKER_SUBNET:-172.28.0.0/24}
     volumes:
