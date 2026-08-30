@@ -3,17 +3,30 @@
 # service   type  private unpriv  chroot  wakeup  maxproc command + args
 # ============================================================================
 
+# Every inet listener below is bound to ONE address. inet_interfaces is global,
+# so it cannot put :2525 on the LAN and :10025 on the filter network at the same
+# time -- only these per-service host prefixes can. Without them the re-injection
+# listener is also bound on POSTFIX_MACVLAN_IP, i.e. present on the mail LAN and
+# one mistaken port-forward from being internet-reachable.
+
 # ---- Inbound SMTP :2525 (postscreen in front) ------------------------------
-2525      inet  n       -       n       -       1       postscreen
+${POSTFIX_MACVLAN_IP}:2525      inet  n       -       n       -       1       postscreen
 smtpd     pass  -       -       n       -       -       smtpd
-    -o content_filter=spamallam:[spamallam]:10026
+    -o content_filter=spamallam:[${FILTER_SPAMALLAM_IP}]:10026
 dnsblog   unix  -       -       n       -       0       dnsblog
 tlsproxy  unix  -       -       n       -       0       tlsproxy
 
 ${STARTTLS_LISTENER}
 
 # ---- Re-injection listener :10025 (spamallam only; NO content filter) ------
-10025     inet  n       -       n       -       -       smtpd
+# Bound to the filter network, and mynetworks is spamallam's single /32 -- so
+# reaching this socket requires being on filternet AND being that address.
+#
+# smtpd_authorized_xforward_hosts is empty (postfix's default: nobody).
+# spamallam re-injects with plain smtplib and never sends XFORWARD, so allowing
+# it only granted the ability to forge client identity into the internal mail
+# server's Received: chain.
+${FILTER_POSTFIX_IP}:10025     inet  n       -       n       -       -       smtpd
     -o syslog_name=postfix/reinject
     -o content_filter=
     -o smtpd_client_restrictions=permit_mynetworks,reject
@@ -22,7 +35,7 @@ ${STARTTLS_LISTENER}
     -o smtpd_recipient_restrictions=permit_mynetworks,reject_unauth_destination
     -o smtpd_relay_restrictions=permit_mynetworks,reject_unauth_destination
     -o smtpd_data_restrictions=
-    -o smtpd_authorized_xforward_hosts=$mynetworks
+    -o smtpd_authorized_xforward_hosts=
     -o smtpd_tls_security_level=none
     -o receive_override_options=no_unknown_recipient_checks,no_header_body_checks
     -o postscreen_access_list=permit_mynetworks

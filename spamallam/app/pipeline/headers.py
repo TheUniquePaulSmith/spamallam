@@ -19,6 +19,9 @@ from dataclasses import dataclass, field
 # Headers an attacker could pre-set to influence scoring/foldering downstream.
 _STRIP_RE = re.compile(rb"^(?:x-spamallam-[\w-]*|x-spam-[\w-]*|x-spamd-[\w-]*)\s*:", re.IGNORECASE)
 
+# Captures the separator so a stripped block can be rebuilt byte-for-byte.
+_LINE_SPLIT_RE = re.compile(rb"(\r?\n)")
+
 
 def split_message(raw: bytes) -> tuple[bytes, bytes]:
     """Return (header_block, rest) where rest starts with the blank-line separator."""
@@ -41,24 +44,46 @@ def strip_spam_headers(raw: bytes) -> tuple[bytes, list[bytes]]:
 
     Returns (cleaned_message, removed_header_lines) — removed lines are logged
     as a spoofing signal.
+
+    Splits on EITHER line ending, capturing the separators. Picking one
+    separator for the whole block (the obvious implementation) lets a header
+    block that mixes CRLF with bare LF smuggle an X-SpamAllam-* line through:
+    the embedded LF stays inside what the split treats as a single "line", and
+    _STRIP_RE is ^-anchored, so only the outer line's name is ever tested.
+    Everything downstream trusts that this function is total.
+
+    Re-emitting each kept line with its own original separator keeps an
+    untouched message byte-identical — DKIM signatures cover these bytes.
     """
     head, rest = split_message(raw)
-    newline = _newline_style(head, rest)
-    lines = head.split(newline)
-    kept: list[bytes] = []
+    default_newline = _newline_style(head, rest)
+    # ["line", sep, "line", sep, ..., "line"] -- lines at even indices.
+    parts = _LINE_SPLIT_RE.split(head)
+    kept: list[tuple[bytes, bytes]] = []  # (separator that preceded it, line)
     removed: list[bytes] = []
     skipping = False
-    for line in lines:
+    for idx in range(0, len(parts), 2):
+        line = parts[idx]
+        sep_before = parts[idx - 1] if idx else b""
         if line[:1] in (b" ", b"\t"):  # continuation of previous header
-            (removed if skipping else kept).append(line)
+            if skipping:
+                removed.append(line)
+            else:
+                kept.append((sep_before, line))
             continue
         if _STRIP_RE.match(line):
             skipping = True
             removed.append(line)
         else:
             skipping = False
-            kept.append(line)
-    return newline.join(kept) + rest, removed
+            kept.append((sep_before, line))
+
+    out: list[bytes] = []
+    for sep_before, line in kept:
+        if out:  # the first surviving line never carries a leading separator
+            out.append(sep_before or default_newline)
+        out.append(line)
+    return b"".join(out) + rest, removed
 
 
 @dataclass

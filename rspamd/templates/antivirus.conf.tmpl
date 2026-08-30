@@ -3,8 +3,16 @@ clamav {
   type = "clamav";
   servers = "clamav:3310";
   symbol = "CLAM_VIRUS";
+  # Set explicitly rather than relying on the derived "<symbol>_FAIL" default:
+  # spamallam consumes this exact name to notice that a scan did not happen.
+  # A failed scan scores 0.0, so without it malware is delivered exactly like
+  # a clean message and nothing anywhere records that nothing was scanned.
+  symbol_fail = "CLAM_VIRUS_FAIL";
   action = "reject";
   log_clean = true;
+  # Bound the retry loop so a wedged clamd surfaces as a failure promptly
+  # instead of holding the connection.
+  retransmits = 2;
   patterns {
     CLAM_UNOFFICIAL = "UNOFFICIAL$";
   }

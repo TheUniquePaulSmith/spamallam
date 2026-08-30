@@ -8,7 +8,17 @@
     <p class="big {{ 'ok' if cfg.ai.enabled else 'warn' }}">
       {{ 'ENABLED' if cfg.ai.enabled else 'DISABLED' }}</p>
     <p class="muted">provider: {{ provider_label }}<br>
-       failure mode: {{ cfg.ai.failure_mode }} · drop ≥ {{ cfg.ai.drop_threshold }}</p>
+       drop ≥ {{ cfg.ai.drop_threshold }}</p>
+  </div>
+  <div class="card">
+    <h2>Failure policy</h2>
+    <p class="big {{ 'warn' if failure_policy.all_down == 'deliver_tagged' else 'ok' }}">
+      {{ failure_policy.all_down|replace('_', ' ')|upper }}</p>
+    <p class="muted">when every control is unavailable<br>
+       ai: {{ failure_policy.ai|replace('_', ' ') }} ·
+       rspamd: {{ failure_policy.rspamd|replace('_', ' ') }} ·
+       av: {{ failure_policy.antivirus|replace('_', ' ') }}<br>
+       <a href="/settings/failure">change</a></p>
   </div>
   <div class="card">
     <h2>Overrides</h2>

@@ -68,6 +68,39 @@ async def _resolves_to_unsafe_address(host: str) -> bool:
     return not addrs or any(_is_unsafe_address(a) for a in addrs)
 
 
+# Second-level labels that act as public suffixes, so "shop.co.uk" is a site but
+# "co.uk" is not. Deliberately not a full public-suffix list: one bundled here
+# would go stale, and the only cost of guessing "related" is refusing a fetch --
+# which is always the safe direction for this guardrail.
+_PSEUDO_TLDS = {"co", "com", "net", "org", "gov", "edu", "ac", "or", "ne", "gr"}
+
+
+def _site_of(host: str) -> str:
+    """Approximate registrable domain: t.evil.example and www.evil.example both
+    reduce to evil.example."""
+    host = host.strip(".").lower()
+    try:
+        ipaddress.ip_address(host)
+        return host  # an IP literal has no domain structure to reduce
+    except ValueError:
+        pass
+    labels = host.split(".")
+    if len(labels) < 3:
+        return host
+    if labels[-2] in _PSEUDO_TLDS and len(labels[-1]) == 2:
+        return ".".join(labels[-3:])
+    return ".".join(labels[-2:])
+
+
+def _host_related(a: str, b: str) -> bool:
+    """True when two hosts belong to the same site. Exact-match alone let a
+    sender put the tracker on t.evil.com and then name www.evil.com in an
+    injected instruction, defeating the never-touch-message-links guardrail."""
+    if not a or not b:
+        return False
+    return a == b or _site_of(a) == _site_of(b)
+
+
 def forbidden_reason(url: str, summary: dict[str, Any]) -> str | None:
     """Return why this URL must not be fetched, or None if allowed."""
     body_urls = summary.get("urls_in_body", []) or []
@@ -75,8 +108,8 @@ def forbidden_reason(url: str, summary: dict[str, Any]) -> str | None:
     if any(_norm_url(u) == norm for u in body_urls):
         return "URL appears verbatim in the message body — never fetched (activation risk)"
     host = _host(url)
-    if host and any(_host(u) == host for u in body_urls):
-        return (f"host {host!r} appears in message-body URLs — never fetched "
+    if host and any(_host_related(host, _host(u)) for u in body_urls):
+        return (f"host {host!r} is the same site as a message-body URL — never fetched "
                 "(activation/tracking risk); use web_search evidence instead")
     return None
 
@@ -142,6 +175,7 @@ async def web_search(args: dict[str, Any], cfg: dict[str, Any], box: SecretsBox)
 _UA = "Mozilla/5.0 (compatible; SpamAllam-verifier/1.0)"
 _MAX_BYTES = 1_500_000
 _MAX_TEXT = 5000
+_MAX_REDIRECTS = 3
 
 
 def _to_text(markup: str) -> str:
@@ -150,16 +184,50 @@ def _to_text(markup: str) -> str:
     return re.sub(r"\s{2,}", " ", text).strip()
 
 
-async def _fetch_curl(url: str) -> str:
-    proc = await asyncio.create_subprocess_exec(
-        "curl", "-sSL", "--max-time", "20", "--max-filesize", str(_MAX_BYTES),
-        "--proto", "=https,http", "-A", _UA, url,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-    )
-    out, err = await proc.communicate()
-    if proc.returncode != 0:
-        raise RuntimeError(f"curl exit {proc.returncode}: {err.decode(errors='replace')[:300]}")
-    return out.decode(errors="replace")
+async def _fetch_http(url: str) -> str:
+    """GET `url`, re-running the SSRF guard on EVERY redirect hop.
+
+    A pre-flight check on the first URL proves nothing on its own: any client
+    that follows redirects internally (curl -L, a browser) will happily be sent
+    from a public host to 169.254.169.254, or to rspamd/redis on the internal
+    network, and hand the body back to the model. Redirects are therefore
+    followed manually here, with the guard applied before each connection, and
+    the response is capped as it streams rather than after it has been read.
+
+    Residual risk, deliberately accepted: the target is resolved once for the
+    check and again by the connection, so a 0-TTL record that answers public
+    then private can still win the race. Closing that needs connect-time IP
+    pinning; it is part of why web_fetch ships disabled by default.
+    """
+    current = url
+    async with httpx.AsyncClient(
+        timeout=20, follow_redirects=False, headers={"User-Agent": _UA}
+    ) as client:
+        for _ in range(_MAX_REDIRECTS + 1):
+            host = _host(current)
+            if not host or await _resolves_to_unsafe_address(host):
+                raise RuntimeError(
+                    f"refused: {current!r} is or resolves to a private/internal address"
+                )
+            async with client.stream("GET", current) as resp:
+                if resp.is_redirect:
+                    location = resp.headers.get("location", "")
+                    if not location:
+                        raise RuntimeError("redirect without a Location header")
+                    current = str(httpx.URL(current).join(location))
+                    if not current.lower().startswith(("http://", "https://")):
+                        raise RuntimeError(f"refused redirect to non-http(s) target {current!r}")
+                    continue
+                resp.raise_for_status()
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in resp.aiter_bytes():
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total >= _MAX_BYTES:
+                        break
+                return b"".join(chunks).decode(errors="replace")
+    raise RuntimeError(f"too many redirects (more than {_MAX_REDIRECTS})")
 
 
 async def _fetch_browser(url: str, backend: str, endpoint: str) -> str:
@@ -179,8 +247,19 @@ async def _fetch_browser(url: str, backend: str, endpoint: str) -> str:
             browser = await pw.chromium.launch()
         try:
             page = await browser.new_page(user_agent=_UA)
+
+            # The browser follows redirects and loads subresources on its own,
+            # so the caller's pre-flight check covers only the first URL. Every
+            # request the page makes is re-checked here instead.
+            async def _guard(route: Any, request: Any) -> None:
+                if await _resolves_to_unsafe_address(_host(request.url)):
+                    await route.abort()
+                else:
+                    await route.continue_()
+
+            await page.route("**/*", _guard)
             await page.goto(url, timeout=20000, wait_until="domcontentloaded")
-            return await page.content()
+            return (await page.content())[:_MAX_BYTES]
         finally:
             await browser.close()
 
@@ -202,8 +281,10 @@ async def web_fetch(args: dict[str, Any], cfg: dict[str, Any], summary: dict[str
     wcfg = cfg["tools"]["web_fetch"]
     backend = (wcfg.get("backend") or "curl").lower()
     try:
-        if backend == "curl":
-            markup = await _fetch_curl(url)
+        # "curl" is kept as the stored setting value for existing settings.yml
+        # files; the fetch itself is in-process now (see _fetch_http).
+        if backend in ("curl", "http"):
+            markup = await _fetch_http(url)
         elif backend in ("playwright", "lightpanda"):
             markup = await _fetch_browser(url, backend, (wcfg.get("endpoint") or "").strip())
         else:

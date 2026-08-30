@@ -5,7 +5,9 @@
 <p class="muted">Whitelisted sender domains and named recipients <strong>always pass as
 HAM</strong> — AI analysis is skipped, rspamd is forced to "no action", and the message
 carries a declarative <code>X-SpamAllam-Whitelisted</code> header. This is also the
-correct lever for legitimate bulk senders riding SendGrid/SES/Mailchimp.</p>
+correct lever for legitimate bulk senders riding SendGrid/SES/Mailchimp. Sender-domain
+rules are subject to the authentication requirement below; whitelist only domains whose
+subdomains you trust, since subdomains match too.</p>
 <form method="post" action="/settings/overrides" class="card">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <div class="cols">
@@ -19,6 +21,19 @@ correct lever for legitimate bulk senders riding SendGrid/SES/Mailchimp.</p>
       <textarea name="blocklist_domains" rows="8"
         placeholder="spammy-domain.example">{{ cfg.overrides.blocklist_domains|join('\n') }}</textarea></label>
   </div>
+
+  <h2>Sender authentication</h2>
+  <label class="row"><input type="checkbox" name="require_auth_for_whitelist"
+      {{ 'checked' if cfg.overrides.require_auth_for_whitelist }}>
+    <span><strong>Require authentication for sender-domain whitelisting</strong> (recommended)
+      — a whitelisted domain only wins when rspamd confirms the sender with DMARC alignment,
+      or with SPF for an envelope-sender match. Both the envelope sender and the
+      <code>From:</code> header are trivially forgeable, and a whitelist hit skips AI, rspamd
+      <em>and</em> ClamAV — so with this off, anyone who knows one of the domains above can
+      bypass the entire gateway, malware included. Recipient rules are unaffected. When rspamd
+      is unreachable the sender cannot be confirmed, so the whitelist is not applied and the
+      message is filtered normally.</span></label>
+
   {% if is_admin %}<button class="primary">Save</button>{% endif %}
 </form>
 {% endblock %}

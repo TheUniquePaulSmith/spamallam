@@ -16,6 +16,14 @@ envsubst '${PASSWORD_HASH}' \
   > /etc/rspamd/local.d/worker-controller.inc
 
 # ---------------------------------------------------------------------------
+# Redis credentials (bayes corpus / fuzzy / greylist state)
+# ---------------------------------------------------------------------------
+envsubst '${REDIS_PASSWORD}' \
+  < "$TEMPLATES/redis.conf.tmpl" \
+  > /etc/rspamd/local.d/redis.conf
+chmod 640 /etc/rspamd/local.d/redis.conf
+
+# ---------------------------------------------------------------------------
 # Antivirus: ClamAV always; VirusTotal only when an API key is provided
 # ---------------------------------------------------------------------------
 if [ -n "${VT_API_KEY:-}" ]; then
@@ -52,7 +60,7 @@ chmod 640 /etc/rspamd/spamallam.config.lua
 # rspamd runs as _rspamd (Ubuntu image) — make its dirs writable
 RSPAMD_USER=$(getent passwd _rspamd >/dev/null 2>&1 && echo _rspamd || echo rspamd)
 chown -R "$RSPAMD_USER":"$RSPAMD_USER" /var/lib/rspamd
-chgrp "$RSPAMD_USER" /etc/rspamd/spamallam.config.lua
+chgrp "$RSPAMD_USER" /etc/rspamd/spamallam.config.lua /etc/rspamd/local.d/redis.conf
 
 log "starting rspamd as $RSPAMD_USER"
 exec rspamd -f -u "$RSPAMD_USER" -g "$RSPAMD_USER"

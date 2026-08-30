@@ -20,6 +20,11 @@ class RspamdResult:
     required_score: float = 0.0
     symbols: dict[str, Any] = field(default_factory=dict)
     error: str = ""
+    # An antivirus engine reported a failure rather than a clean/infected
+    # result. Scores 0.0, so it is invisible in `action` and `score` -- the
+    # caller has to look at this explicitly.
+    av_failed: bool = False
+    av_error: str = ""
 
     @property
     def is_reject(self) -> bool:
@@ -50,6 +55,7 @@ async def check(
     envelope_from: str = "",
     rcpt_tos: list[str] | None = None,
     timeout: float = 30.0,
+    av_fail_symbols: frozenset[str] = frozenset(),
 ) -> RspamdResult:
     headers: list[tuple[str, str]] = [("Pass", "all")]
     if client_ip:
@@ -75,10 +81,34 @@ async def check(
     except Exception as exc:  # noqa: BLE001 — any failure means "rspamd unavailable"
         return RspamdResult(ok=False, error=f"{type(exc).__name__}: {exc}")
 
+    symbols = data.get("symbols", {}) or {}
+    av_failed, av_error = _antivirus_failure(symbols, av_fail_symbols)
     return RspamdResult(
         ok=True,
         action=data.get("action", ""),
         score=float(data.get("score", 0.0)),
         required_score=float(data.get("required_score", 0.0)),
-        symbols=data.get("symbols", {}) or {},
+        symbols=symbols,
+        av_failed=av_failed,
+        av_error=av_error,
     )
+
+
+def _antivirus_failure(
+    symbols: dict[str, Any], av_fail_symbols: frozenset[str]
+) -> tuple[bool, str]:
+    """Find an antivirus <SYMBOL>_FAIL, with rspamd's error text if present.
+
+    The symbol set is passed in rather than read from settings so this module
+    stays a plain protocol client.
+    """
+    for name in av_fail_symbols:
+        info = symbols.get(name)
+        if info is None:
+            continue
+        detail = ""
+        if isinstance(info, dict):
+            options = info.get("options") or []
+            detail = str(options[0]) if options else str(info.get("description", ""))
+        return True, f"{name}: {detail}".strip(": ")
+    return False, ""

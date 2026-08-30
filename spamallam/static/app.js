@@ -2,9 +2,13 @@
 "use strict";
 
 async function postJSON(url, body) {
+  const headers = { "Content-Type": "application/json" };
+  // Absent on the login page, where the endpoints are unauthenticated anyway.
+  const token = document.querySelector('meta[name="csrf-token"]')?.content;
+  if (token) headers["X-CSRF-Token"] = token;
   const resp = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(body || {}),
   });
   const data = await resp.json().catch(() => ({}));

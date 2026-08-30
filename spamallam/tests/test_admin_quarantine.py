@@ -42,6 +42,13 @@ def env(monkeypatch):
         "client": {"addr": "1.2.3.4", "name": "x"}, "drop_reason": "ai",
         "ai_verdict": "PHISHING", "ai_confidence": 0.9,
     }, b"From: s@sender.example\r\nTo: someoneelse@fractalengine.com\r\n\r\nx\r\n")
+    # One message, two recipients: paul can see it, but only one of them is his.
+    quarantine.save("3" * 16, day, {
+        "envelope_from": "s@sender.example", "from_header": "s@sender.example",
+        "subject": "Shared", "rcpt_tos": ["paul@fractalengine.com", "ceo@fractalengine.com"],
+        "client": {"addr": "1.2.3.4", "name": "x"}, "drop_reason": "ai",
+        "ai_verdict": "PHISHING", "ai_confidence": 0.99,
+    }, b"From: s@sender.example\r\nTo: paul@fractalengine.com\r\n\r\nphish\r\n")
 
     client = TestClient(admin_app.create_app())
     yield client, sent, day
@@ -116,6 +123,44 @@ def test_release_delivers_and_whitelists(env):
     assert "sender.example" in SETTINGS.get("overrides.whitelist_domains")
     assert quarantine.get_meta("1" * 16, day)["status"] == "released"
     assert quarantine.get_original("1" * 16, day) is None
+
+
+def test_release_by_non_admin_only_reaches_their_own_address(env):
+    """Seeing a multi-recipient message because one recipient is yours must not
+    let you deliver it to the others -- that would let any user push mail the
+    gateway already classified as malicious into a colleague's mailbox."""
+    client, sent, day = env
+    csrf = _login(client, "paul")
+    r = client.post("/quarantine/release",
+                    data={"csrf": csrf, "entry_id": "3" * 16, "day": day},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    _, rcpts, _ = sent[0]
+    assert rcpts == ["paul@fractalengine.com"]
+    assert "ceo@fractalengine.com" not in rcpts
+
+
+def test_release_by_admin_reaches_every_recipient(env):
+    client, sent, day = env
+    csrf = _login(client, "adm")
+    client.post("/quarantine/release",
+                data={"csrf": csrf, "entry_id": "3" * 16, "day": day},
+                follow_redirects=False)
+    _, rcpts, _ = sent[0]
+    assert rcpts == ["paul@fractalengine.com", "ceo@fractalengine.com"]
+
+
+def test_non_admin_cannot_whitelist_via_release(env):
+    """overrides.whitelist_domains is global and a total filter bypass, so it
+    stays admin-only here just as it is on /settings/overrides."""
+    client, _, day = env
+    csrf = _login(client, "paul")
+    r = client.post("/quarantine/release",
+                    data={"csrf": csrf, "entry_id": "1" * 16, "day": day,
+                          "whitelist_sender": "on"},
+                    follow_redirects=False)
+    assert r.status_code == 303  # release itself is allowed
+    assert "sender.example" not in (SETTINGS.get("overrides.whitelist_domains") or [])
 
 
 def test_non_admin_can_delete_own(env):

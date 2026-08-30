@@ -24,13 +24,16 @@ def clean_settings():
     SETTINGS.path.unlink(missing_ok=True)
 
 
-def fake_rspamd(action="no action", score=1.0, ok=True):
+def fake_rspamd(action="no action", score=1.0, ok=True, symbols=None, authenticated=False):
     async def check(*args, **kwargs):
         if not ok:
             return rspamd_client.RspamdResult(ok=False, error="connect refused")
+        syms = {"SOME_SYMBOL": {"score": score}}
+        if authenticated:
+            syms["DMARC_POLICY_ALLOW"] = {"score": -0.5}
+        syms.update(symbols or {})
         return rspamd_client.RspamdResult(
-            ok=True, action=action, score=score, required_score=15.0,
-            symbols={"SOME_SYMBOL": {"score": score}},
+            ok=True, action=action, score=score, required_score=15.0, symbols=syms,
         )
     return check
 
@@ -56,14 +59,59 @@ async def test_rspamd_reject_drops(monkeypatch):
     assert "rspamd reject" in decision.reason
 
 
-async def test_whitelist_always_delivers_even_on_reject(monkeypatch):
+async def test_authenticated_whitelist_delivers_even_on_reject(monkeypatch):
+    SETTINGS.set("overrides.whitelist_domains", ["somewhere.example"])
+    monkeypatch.setattr(analyzer.rspamd_client, "check",
+                        fake_rspamd(action="reject", score=22.0, authenticated=True))
+    decision, trace = await Pipeline().process(RAW, "sender@somewhere.example",
+                                               ["u@test.example"], CLIENT)
+    assert decision.action == DELIVER
+    assert b"X-SpamAllam-Whitelisted: yes; rule=domain:somewhere.example" in decision.message
+
+
+async def test_unauthenticated_whitelist_is_denied(monkeypatch):
+    """A forged From: must not buy a filter bypass. Without DMARC/SPF backing,
+    the whitelist hit is dropped and normal filtering (here, the rspamd reject
+    that also carries ClamAV's verdict) applies."""
     SETTINGS.set("overrides.whitelist_domains", ["somewhere.example"])
     monkeypatch.setattr(analyzer.rspamd_client, "check",
                         fake_rspamd(action="reject", score=22.0))
     decision, trace = await Pipeline().process(RAW, "sender@somewhere.example",
                                                ["u@test.example"], CLIENT)
+    assert decision.action == DROP
+    assert "rspamd reject" in decision.reason
+    assert any(e.get("kind") == "whitelist_denied" for e in trace.data["events"])
+
+
+async def test_spf_authenticates_an_envelope_sender_whitelist_match(monkeypatch):
+    SETTINGS.set("overrides.whitelist_domains", ["somewhere.example"])
+    monkeypatch.setattr(analyzer.rspamd_client, "check",
+                        fake_rspamd(action="reject", score=22.0,
+                                    symbols={"R_SPF_ALLOW": {"score": -0.2}}))
+    decision, _ = await Pipeline().process(RAW, "sender@somewhere.example",
+                                           ["u@test.example"], CLIENT)
     assert decision.action == DELIVER
-    assert b"X-SpamAllam-Whitelisted: yes; rule=domain:somewhere.example" in decision.message
+
+
+async def test_recipient_whitelist_needs_no_sender_authentication(monkeypatch):
+    """Recipient rules match the envelope recipient, which the gateway supplies
+    itself -- there is nothing for a sender to forge."""
+    SETTINGS.set("overrides.whitelist_recipients", ["u@test.example"])
+    monkeypatch.setattr(analyzer.rspamd_client, "check",
+                        fake_rspamd(action="reject", score=22.0))
+    decision, _ = await Pipeline().process(RAW, "sender@somewhere.example",
+                                           ["u@test.example"], CLIENT)
+    assert decision.action == DELIVER
+
+
+async def test_whitelist_auth_requirement_can_be_disabled(monkeypatch):
+    SETTINGS.set("overrides.whitelist_domains", ["somewhere.example"])
+    SETTINGS.set("overrides.require_auth_for_whitelist", False)
+    monkeypatch.setattr(analyzer.rspamd_client, "check",
+                        fake_rspamd(action="reject", score=22.0))
+    decision, _ = await Pipeline().process(RAW, "sender@somewhere.example",
+                                           ["u@test.example"], CLIENT)
+    assert decision.action == DELIVER
 
 
 async def test_rspamd_outage_fails_open(monkeypatch):

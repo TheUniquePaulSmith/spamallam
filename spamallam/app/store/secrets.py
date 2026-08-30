@@ -15,12 +15,14 @@ from typing import Any
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from ..config import is_placeholder
+
 _ENC_KEY = "$enc"
 
 
 class SecretsBox:
     def __init__(self, master_key: str):
-        if not master_key or master_key.startswith("change-me"):
+        if not master_key or is_placeholder(master_key):
             raise RuntimeError(
                 "SECRETS_KEY is unset or still the placeholder — generate one with "
                 "'openssl rand -hex 32' and set it in .env"

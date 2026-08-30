@@ -109,17 +109,75 @@ postfix/               hardened inbound-only relay (config rendered from env)
 rspamd/                local.d baseline + spamallam Lua plugin
 spamallam/             Python service: SMTP filter, AI engine, tools, admin UI, tests
 acme/                  acme.sh issuance/renewal container
-docs/                  SYNOLOGY.md · UNIFI.md · SECURITY.md · QUARANTINE.md
+docs/                  SYNOLOGY.md · UNIFI.md · SECURITY.md · FIREWALL.md ·
+                       FAILURE-POLICY.md · QUARANTINE.md
 ```
 
 ## Security model
 
-See [docs/SECURITY.md](docs/SECURITY.md) for the threat model. Highlights:
-inbound `X-Spam*` headers are stripped and replaced with HMAC-signed ones;
-the admin UI is HTTPS + WebAuthn-only and must never be WAN-exposed; secrets
-on disk are ciphertext under a runtime-supplied master key; every container
-runs `no-new-privileges` with minimal capabilities; DROP is a silent discard —
-this gateway never generates backscatter.
+See [docs/SECURITY.md](docs/SECURITY.md) for the threat model, including a
+table of what each container's compromise must not allow — and where the
+current design falls short of that. Highlights: inbound `X-Spam*` headers are
+stripped and replaced with HMAC-signed ones; the admin UI is HTTPS +
+WebAuthn-only and must never be WAN-exposed; secrets on disk are ciphertext
+under a runtime-supplied master key; every container runs `no-new-privileges`
+with minimal capabilities; DROP is a silent discard — this gateway never
+generates backscatter.
+
+The networks are segmented so that reaching postfix's re-injection port is not
+the same thing as being trusted to use it: postfix and the filter share one
+internal network that nothing else is on, and `mynetworks` names a single host
+rather than a subnet. [docs/FIREWALL.md](docs/FIREWALL.md) has the full traffic
+model and the gateway/host rules that enforce the parts Docker cannot.
+
+What happens when a security control is *unavailable* is an explicit choice per
+control — deliver tagged, quarantine, or defer — because an attacker who cannot
+beat a filter may instead try to exhaust it. See
+[docs/FAILURE-POLICY.md](docs/FAILURE-POLICY.md).
+
+> **Two secrets are mandatory and validated at startup**: `HEADER_HMAC_KEY` and
+> `SECRETS_KEY`. The container refuses to start if either is unset, still the
+> `.env.example` placeholder, or shorter than 32 characters. `SECRETS_KEY` also
+> derives the admin UI's session and CSRF signing key, so a guessable value
+> there is a full admin authentication bypass, not merely weak encryption at
+> rest.
+
+## Upgrading an existing deployment
+
+The network segmentation and the new required secrets are a breaking change.
+In `.env`:
+
+- **Add `REDIS_PASSWORD`** (`openssl rand -hex 32`). Compose refuses to start
+  without it.
+- **Check `SECRETS_KEY` and `HEADER_HMAC_KEY`.** Both are now validated at
+  startup and must be real values of at least 32 characters — the container
+  exits with a clear message otherwise.
+- `FILTER_SUBNET`, `SCAN_SUBNET` and `ACME_SUBNET` have working defaults. Only
+  set them if you had changed `DOCKER_SUBNET` to avoid a LAN collision, in which
+  case check the new ranges against `ip route` on the docker host too.
+
+`DOCKER_SUBNET` keeps its name, default and meaning, so `MAILSERVER_HOST` and
+the MailPlus allow list need no change — but it is **no longer the re-injection
+trust boundary**. If you had set it for that reason, that job now belongs to
+`FILTER_SPAMALLAM_IP`.
+
+Changing network membership means the networks must be recreated, so a plain
+`up -d` is not enough:
+
+```bash
+docker compose down && docker compose up -d --build
+```
+
+Use `down` **without** `-v` — named volumes (the postfix spool included, so
+queued mail survives) must be kept. Then verify the trust boundary actually
+narrowed:
+
+```bash
+docker exec spamallam-postfix postconf mynetworks
+```
+
+Expect a single `/32`, not a subnet. [docs/FIREWALL.md](docs/FIREWALL.md) §5 has
+the rest of the verification, including the reachability probes that must fail.
 
 ## Tests
 

@@ -59,3 +59,38 @@ def test_sanitize_email_detects_remote_and_wraps_plaintext():
     doc = sanitize.preview_document(html_msg)
     assert doc.startswith("<!doctype html>")
     assert "Remote images and tracking pixels have been blocked" in doc
+
+
+def test_control_characters_cannot_hide_a_dangerous_scheme():
+    """HTMLParser resolves character references before the sanitizer sees the
+    value, and browsers strip TAB/CR/LF from URLs -- so "jav&#9;ascript:" would
+    run unless those characters are removed before the scheme is checked."""
+    for payload in (
+        '<a href="jav&#9;ascript:alert(1)">x</a>',
+        '<a href="jav&#10;ascript:alert(1)">x</a>',
+        '<a href="&#32;javascript:alert(1)">x</a>',
+    ):
+        out = sanitize.sanitize_email_html(payload)
+        assert "javascript" not in out.lower()
+        assert "alert(1)" not in out
+
+
+def test_css_escapes_and_image_set_cannot_fetch_remote_content():
+    """A backslash is a CSS ident escape, so "\75 rl(...)" tokenizes as url();
+    image-set() fetches remote content with no literal "url(" substring."""
+    for payload in (
+        r'<p style="background:\75 rl(https://evil/x)">y</p>',
+        r'<p style="background:\000075rl(https://evil/x)">y</p>',
+        '<p style="background-image:image-set(https://evil/x.png 1x)">y</p>',
+        '<p style="background:cross-fade(url(https://evil/x.png))">y</p>',
+    ):
+        assert "evil" not in sanitize.sanitize_email_html(payload)
+
+    # inert declarations still survive
+    assert "color:#333" in sanitize.sanitize_email_html('<p style="color:#333">y</p>')
+
+
+def test_links_never_get_a_new_browsing_context():
+    out = sanitize.sanitize_email_html('<a href="https://ok.example" target="_blank">z</a>')
+    assert "target" not in out
+    assert 'href="https://ok.example"' in out

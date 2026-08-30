@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Failure policy{% endblock %}
+{% block content %}
+<h1>Failure policy</h1>
+<p class="muted">What happens to a message when a security control <strong>cannot run</strong> —
+  the LLM provider is unreachable, rspamd is down, ClamAV cannot scan. This is the one screen
+  where a wrong choice quietly turns the gateway into a pass-through, so each option states what
+  an attacker gains from it. Full write-up in
+  <code>docs/FAILURE-POLICY.md</code>.</p>
+<p class="muted">These matter because an attacker who cannot beat the filters can instead try to
+  <em>exhaust</em> them — expensive messages, floods of concurrent mail, provider throttling. If
+  the answer to “the scanner is unavailable” is always “deliver anyway”, then making a control
+  unavailable <em>is</em> the bypass.</p>
+
+<form method="post" action="/settings/failure" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+
+  {% macro policy_group(name, label, description) %}
+  <h2>{{ label }}</h2>
+  <p class="muted">{{ description }}</p>
+  <label class="row"><input type="radio" name="{{ name }}" value="deliver_tagged"
+      {{ 'checked' if resolved[name] == 'deliver_tagged' }}>
+    <span><strong>Deliver, tagged</strong> — the message goes through with an
+      <code>X-SpamAllam-Control-Failure</code> header. Availability first.
+      <em>An attacker who can take this control down gets unfiltered delivery.</em></span></label>
+  <label class="row"><input type="radio" name="{{ name }}" value="quarantine"
+      {{ 'checked' if resolved[name] == 'quarantine' }}>
+    <span><strong>Quarantine</strong> — accepted and stored, nothing delivered; review and
+      release it from <a href="/quarantine">Quarantine</a>. Nothing is lost and nothing reaches a
+      mailbox unscanned, but a long outage needs someone to work through the backlog.</span></label>
+  <label class="row"><input type="radio" name="{{ name }}" value="defer"
+      {{ 'checked' if resolved[name] == 'defer' }}>
+    <span><strong>Defer (451)</strong> — the sending server keeps the message and retries.
+      Strictest, and no backlog for you to clear. Not loss-free forever: postfix returns mail to
+      the sender after <code>maximal_queue_lifetime</code> (1 day), and some senders give up
+      sooner.</span></label>
+  {% endmacro %}
+
+  {{ policy_group('ai', 'AI analysis unavailable',
+     'The LLM provider errored, timed out, or the tool loop did not converge. Only applies when
+      AI analysis is enabled.') }}
+
+  {{ policy_group('rspamd', 'rspamd unavailable',
+     'rspamd could not be reached at all. This also means the antivirus behind it did not run,
+      so both controls are counted as failed.') }}
+
+  {{ policy_group('antivirus', 'Antivirus scan failed',
+     'rspamd answered, but ClamAV reported it could not scan. A failed scan scores 0.0 — exactly
+      like a clean one — so without this setting malware is delivered and nothing records that
+      nothing was scanned.') }}
+
+  {{ policy_group('all_down', 'Every control unavailable',
+     'Applied when nothing inspected the message at all. This can only make the outcome stricter
+      than the per-control settings above, never weaker. Defaults to “deliver, tagged” only to
+      preserve behaviour on upgrade — “defer” is the right answer for most deployments, because
+      this is the one state where mail reaches a mailbox with zero inspection.') }}
+
+  {% if is_admin %}<button class="primary">Save</button>
+  {% else %}<p class="muted">Read-only: admin privileges required to change settings.</p>{% endif %}
+</form>
+
+<div class="card">
+  <h2>Antivirus failure detection</h2>
+  <p class="muted">A failed scan is recognised by these rspamd symbols. ClamAV's is
+    <code>CLAM_VIRUS_FAIL</code>; VirusTotal's is deliberately not listed by default, because a
+    rate-limited hash lookup should not defer your mail.</p>
+  <p class="muted"><strong>Known gap:</strong> rspamd emits no “scanned clean” symbol, so
+    “scanned, clean” and “the antivirus module was never in the path” look identical from here.
+    This detects scanner <em>errors</em>, not scanner <em>absence</em>.</p>
+  <p><code>{{ fail_symbols|join(', ') }}</code></p>
+</div>
+{% endblock %}

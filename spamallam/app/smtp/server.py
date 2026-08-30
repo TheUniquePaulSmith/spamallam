@@ -36,6 +36,21 @@ def _xtext_decode(value: str) -> str:
     return "".join(out)
 
 
+def _peer_is_trusted(session: Any) -> bool:
+    """Whether this connection came from the edge MTA.
+
+    ENV.xforward_trusted_peers is normally the postfix container's address on
+    the filter network. Empty means "trust any peer", which is the pre-
+    segmentation behavior and is only safe when nothing else can reach this
+    port at all.
+    """
+    trusted = ENV.xforward_trusted_peers
+    if not trusted:
+        return True
+    peer = getattr(session, "peer", None)
+    return bool(peer) and str(peer[0]) in trusted
+
+
 class SpamallamSMTP(SMTP):
     """aiosmtpd SMTP with postfix XFORWARD support."""
 
@@ -43,6 +58,13 @@ class SpamallamSMTP(SMTP):
 
     @syntax("XFORWARD attr=value [attr=value ...]")
     async def smtp_XFORWARD(self, arg: str) -> None:
+        # XFORWARD rewrites the client IP/HELO that rspamd evaluates SPF and the
+        # RBLs against, and that the AI sees as the sender's origin -- postfix's
+        # own equivalent (smtpd_authorized_xforward_hosts) exists for exactly
+        # this reason. Only the edge MTA may use it.
+        if not _peer_is_trusted(self.session):
+            await self.push("550 5.7.1 XFORWARD not authorized from this client")
+            return
         if not arg:
             await self.push("501 5.5.4 Syntax: XFORWARD attr=value")
             return
@@ -124,7 +146,8 @@ async def start_smtp_server() -> asyncio.AbstractServer:
         )
 
     server = await asyncio.get_running_loop().create_server(
-        factory, host="0.0.0.0", port=ENV.smtp_listen_port
+        factory, host=ENV.smtp_listen_host, port=ENV.smtp_listen_port
     )
-    log.info("SMTP content filter listening on :%d", ENV.smtp_listen_port)
+    log.info("SMTP content filter listening on %s:%d",
+             ENV.smtp_listen_host, ENV.smtp_listen_port)
     return server
