@@ -194,11 +194,12 @@ Then verify the trust boundary actually narrowed:
 docker exec spamallam-postfix postconf mynetworks
 ```
 
-Expect a single `/32`, not a subnet. And confirm the delivery gateway is still
-the address `MAILSERVER_HOST` points at:
+Expect a single `/32`, not a subnet. Then confirm delivery still works — this
+is the check that matters, because the last hop to your mail server is the one
+thing segmentation could plausibly have broken:
 
 ```bash
-docker network inspect spamallam_delivernet --format '{{(index .IPAM.Config 0).Gateway}}'
+docker exec spamallam-postfix nc -zv -w5 <MAILSERVER_HOST> <MAILSERVER_PORT>
 ```
 
 [docs/FIREWALL.md](docs/FIREWALL.md) §5 has the rest of the verification,

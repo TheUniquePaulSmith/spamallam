@@ -83,14 +83,27 @@ look like everything is working (accepted, scanned, reinjected) right up
 until this last hop. Use the `delivernet` docker bridge gateway IP instead — that
 path never touches the macvlan interface, so it isn't affected:
 
+The gateway is the first usable address of `DOCKER_SUBNET` — `172.28.0.1` by
+default. Read it off the host's bridge interface, which is authoritative:
+
 ```bash
-docker network inspect spamallam_delivernet --format '{{(index .IPAM.Config 0).Gateway}}'
+ip -4 -o addr show | awk '$4 ~ /^172\.28\.0\./ {print $2, $4}'
+```
+
+Then confirm postfix can actually reach MailPlus over it:
+
+```bash
 docker exec spamallam-postfix nc -zv -w5 <that-gateway-ip> <MAILSERVER_PORT>
 ```
 
 If the `nc` check succeeds (it will, unless MailPlus is bound to a specific
-interface rather than all of them), set `MAILSERVER_HOST` to that gateway IP
-— typically `172.28.0.1` for the default `DOCKER_SUBNET`.
+interface rather than all of them), set `MAILSERVER_HOST` to that gateway IP.
+
+> Do not rely on `docker network inspect ... {{.IPAM.Config}} .Gateway` here.
+> When a network declares a subnet without an explicit gateway — as this stack
+> does — Docker allocates `.1` but does not always write it back into that
+> field, so the command can print nothing on a perfectly healthy network. The
+> `nc` check above is the one that actually tells you something.
 
 > If MailPlus is on a genuinely different physical host, its normal LAN IP is
 > correct as-is — this restriction only applies when it's the same box.
