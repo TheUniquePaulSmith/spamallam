@@ -239,3 +239,27 @@ packaged version from `pyproject.toml`.
 State (config, users, logs, bayes data, certs) lives in named volumes and
 survives rebuilds. Back up the `spamallam-data` volume — with `SECRETS_KEY`
 kept separately, its config files contain no plaintext secrets.
+
+### Upgrading across the network-segmentation change
+
+The release that split `mailnet` into `filternet`/`delivernet`/`scannet`/
+`acmenet` needs one extra step, because `delivernet` takes over
+`DOCKER_SUBNET` (which is what keeps `MAILSERVER_HOST` working unchanged) while
+the old network still holds it:
+
+```
+failed to create network spamallam_delivernet: Error response from daemon:
+Pool overlaps with other one on this address space
+```
+
+`mailnet` is gone from `docker-compose.yml`, so `down` does not always remove
+it. Delete it explicitly, then bring the stack up:
+
+```bash
+docker compose down --remove-orphans && docker network rm spamallam_mailnet && docker compose up -d --build
+```
+
+Never add `-v` to that `down`: the postfix spool is a named volume, and queued
+mail lives in it. That release also requires a new `REDIS_PASSWORD` in `.env`,
+and `SECRETS_KEY`/`HEADER_HMAC_KEY` of at least 32 characters — the containers
+refuse to start otherwise. See the README's Upgrading section.

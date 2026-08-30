@@ -161,23 +161,48 @@ the MailPlus allow list need no change — but it is **no longer the re-injectio
 trust boundary**. If you had set it for that reason, that job now belongs to
 `FILTER_SPAMALLAM_IP`.
 
-Changing network membership means the networks must be recreated, so a plain
-`up -d` is not enough:
+Changing network membership means the networks must be recreated, and the old
+`mailnet` has to be deleted first. `delivernet` deliberately takes over
+`DOCKER_SUBNET` — that is what keeps `MAILSERVER_HOST` working unchanged — so
+while `spamallam_mailnet` still exists, the two collide:
+
+```
+failed to create network spamallam_delivernet: Error response from daemon:
+Pool overlaps with other one on this address space
+```
+
+`mailnet` is no longer in `docker-compose.yml`, so `down` does not always
+remove it. Delete it explicitly:
 
 ```bash
-docker compose down && docker compose up -d --build
+docker compose down --remove-orphans && docker network rm spamallam_mailnet && docker compose up -d --build
 ```
 
 Use `down` **without** `-v` — named volumes (the postfix spool included, so
-queued mail survives) must be kept. Then verify the trust boundary actually
-narrowed:
+queued mail survives) must be kept. If `network rm` reports the network does not
+exist, it was already cleaned up; carry on.
+
+To find out which network is holding a subnet, on any "Pool overlaps" error:
+
+```bash
+docker network ls --format '{{.Name}}' | while read -r n; do printf '%-34s %s\n' "$n" "$(docker network inspect "$n" --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}')"; done
+```
+
+Then verify the trust boundary actually narrowed:
 
 ```bash
 docker exec spamallam-postfix postconf mynetworks
 ```
 
-Expect a single `/32`, not a subnet. [docs/FIREWALL.md](docs/FIREWALL.md) §5 has
-the rest of the verification, including the reachability probes that must fail.
+Expect a single `/32`, not a subnet. And confirm the delivery gateway is still
+the address `MAILSERVER_HOST` points at:
+
+```bash
+docker network inspect spamallam_delivernet --format '{{(index .IPAM.Config 0).Gateway}}'
+```
+
+[docs/FIREWALL.md](docs/FIREWALL.md) §5 has the rest of the verification,
+including the reachability probes that must fail.
 
 ## Tests
 
