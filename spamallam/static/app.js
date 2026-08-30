@@ -472,16 +472,13 @@ if (recentBody) {
   let primed = false;
 
   function dashboardRowHtml(t) {
-    const msg = t.message || {};
-    const verdict = t.verdict || {};
-    const subject = msg.subject || "(no subject)";
     return `<tr data-id="${escapeHtml(t.id || "")}">
-      <td>${escapeHtml(t.ts || "")}</td>
+      <td>${escapeHtml(t.time || "")}</td>
       <td>${escapeHtml(t.envelope_from || "<>")}</td>
-      <td title="${escapeHtml(msg.subject || "")}">${escapeHtml(subject)}</td>
-      <td>${escapeHtml((t.rcpt_tos || []).join(", "))}</td>
-      <td>${escapeHtml(verdict.ai_verdict || "")} ${(verdict.ai_confidence || 0).toFixed(2)}</td>
-      <td>${escapeHtml(verdict.rspamd_action || "")} (${(verdict.rspamd_score || 0).toFixed(1)})</td>
+      <td title="${escapeHtml(t.subject || "")}">${escapeHtml(t.subject || "(no subject)")}</td>
+      <td>${escapeHtml(t.to || "")}</td>
+      <td>${escapeHtml(t.ai_verdict || "")}</td>
+      <td>${escapeHtml(t.rspamd || "")}</td>
       <td class="${t.action === "drop" ? "warn" : "ok"}">${escapeHtml(t.action || "")}</td>
     </tr>`;
   }
