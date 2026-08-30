@@ -8,7 +8,7 @@ write time — only the fact that they changed is recorded.</p>
   <tr><th>time</th><th>actor</th><th>action</th><th>detail</th></tr>
   {% for e in entries %}
   <tr>
-    <td class="mono">{{ e.ts }}</td>
+    <td class="mono">{{ fmt_dt(e.ts) }}</td>
     <td>{{ e.actor }}</td>
     <td>{{ e.action }}</td>
     <td class="mono small">{{ e.detail|tojson }}</td>

@@ -19,6 +19,7 @@ from ..store import audit, rawlog, tracelog
 from ..store import users as users_store
 from ..store.secrets import SecretsBox, redact
 from ..store.settings import SETTINGS
+from ..tools import timezones
 from ..tools.unifi import read_suggestions
 from ..version import get_version
 from . import security, webauthn_flow
@@ -56,17 +57,23 @@ _HTML_ERROR_REDIRECT = {
     "/settings/logging": "/logs",
     "/users/invite": "/users",
     "/users/delete": "/users",
+    "/users/timezone": "/users",
     "/users/passkey/delete": "/users",
 }
 
 
 def render(request: Request, name: str, username: str | None = None, **ctx: Any) -> HTMLResponse:
     user = users_store.get_user(username) if username else None
+    tz_name = timezones.normalize((user or {}).get("timezone"))
     return templates.TemplateResponse(request, name, {
         "username": username,
         "is_admin": bool(user and user.get("is_admin")),
         "csrf": security.csrf_token(username) if username else "",
         "version": get_version(),
+        "tz_name": tz_name,
+        # Every screen renders stored UTC timestamps through this, so a user's
+        # time-zone preference reaches all friendly dates from one place.
+        "fmt_dt": lambda value: timezones.friendly(value, tz_name),
         **ctx,
     })
 
@@ -190,15 +197,16 @@ def create_app() -> FastAPI:
     async def dashboard(request: Request):
         username = security.require_user(request)
         cfg = SETTINGS.all()
-        traces = tracelog.read_recent_summary(limit=10)
+        traces = tracelog.read_recent_summary(limit=10, tz_name=users_store.get_timezone(username))
         return render(request, "dashboard.html", username,
                       cfg=cfg, provider_label=f"{cfg['provider']['type']}/{cfg['provider']['model']}",
                       users=users_store.all_users(), traces=traces)
 
     @app.get("/api/traces/recent")
     async def api_traces_recent(request: Request):
-        security.require_user(request)
-        return {"traces": tracelog.read_recent_summary(limit=10)}
+        username = security.require_user(request)
+        return {"traces": tracelog.read_recent_summary(
+            limit=10, tz_name=users_store.get_timezone(username))}
 
     # ------------------------------------------------------------ settings: AI
     @app.get("/settings/ai", response_class=HTMLResponse)
@@ -643,7 +651,20 @@ def create_app() -> FastAPI:
         username = security.require_user(request)
         return render(request, "users.html", username,
                       users=users_store.all_users(), invite_token=invite_token,
+                      timezones=timezones.TIMEZONES,
+                      my_timezone=users_store.get_timezone(username),
                       invite_url=ENV.admin_external_url(f"/setup?token={invite_token}") if invite_token else "")
+
+    @app.post("/users/timezone")
+    async def users_timezone(request: Request, csrf: str = Form(...),
+                             timezone_name: str = Form(...)):
+        username = security.require_user(request)
+        security.check_csrf(username, csrf)
+        if not timezones.is_valid(timezone_name):
+            raise HTTPException(status_code=400, detail="unknown time zone")
+        if users_store.set_timezone(username, timezone_name):
+            audit.record(username, "user.timezone", {"timezone": timezone_name})
+        return RedirectResponse(_flash_url("/users", "saved", "Time zone saved."), status_code=303)
 
     @app.post("/users/invite")
     async def users_invite(request: Request, csrf: str = Form(...),

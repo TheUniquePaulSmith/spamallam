@@ -15,13 +15,13 @@
 {% for uname, u in users.items() %}
 <div class="card">
   <h2>{{ uname }} {% if u.is_admin %}<span class="badge">admin</span>{% endif %}
-      <span class="muted small">{{ u.display }} · created {{ u.created }}</span></h2>
+      <span class="muted small">{{ u.display }} · created {{ fmt_dt(u.created) }}</span></h2>
   <table>
     <tr><th>passkey</th><th>added</th><th>id</th><th></th></tr>
     {% for c in u.credentials %}
     <tr>
       <td>{{ c.label }}</td>
-      <td>{{ c.added }}</td>
+      <td>{{ fmt_dt(c.added) }}</td>
       <td class="mono small">{{ c.id[:20] }}…</td>
       <td>
         {% if uname == username %}
@@ -36,6 +36,18 @@
     {% else %}<tr><td colspan="4" class="muted">no passkeys (user cannot sign in)</td></tr>{% endfor %}
   </table>
   {% if uname == username %}
+  <form method="post" action="/users/timezone" class="inline-form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Time zone for friendly dates
+      <select name="timezone_name">
+        {% for tz_value, tz_label in timezones %}
+        <option value="{{ tz_value }}" {{ 'selected' if tz_value == my_timezone }}>{{ tz_label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button class="primary">Save time zone</button>
+    <span class="muted small">Applies to every date shown in the admin UI.</span>
+  </form>
   <label>New passkey label <input id="passkey-label" placeholder="e.g. backup YubiKey"></label>
   <button id="add-passkey-btn">Add passkey to my account</button>
   <p id="passkey-error" class="error" hidden></p>

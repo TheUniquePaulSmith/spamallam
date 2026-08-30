@@ -94,10 +94,26 @@ def create_user(username: str, display: str, is_admin: bool) -> dict[str, Any]:
         "display": display or username,
         "is_admin": bool(is_admin),
         "created": _now(),
+        "timezone": "UTC",
         "credentials": [],
     }
     save_user(username, user)
     return user
+
+
+def get_timezone(username: str) -> str:
+    """The user's friendly-date time-zone preference (IANA name); 'UTC' default."""
+    user = get_user(username) or {}
+    return user.get("timezone") or "UTC"
+
+
+def set_timezone(username: str, tz_name: str) -> bool:
+    user = get_user(username)
+    if user is None:
+        return False
+    user["timezone"] = tz_name
+    save_user(username, user)
+    return True
 
 
 def add_credential(username: str, cred_id_b64: str, public_key_b64: str,

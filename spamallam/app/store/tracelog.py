@@ -95,21 +95,19 @@ def read_recent(limit: int = 200, day: str | None = None) -> list[dict]:
     return _read_from_disk(limit, day)
 
 
-def _format_time(ts: str) -> str:
-    try:
-        dt = datetime.fromisoformat(ts)
-    except ValueError:
-        return ts
-    return dt.strftime("%b %d, %Y %H:%M") + " UTC"
+def _format_time(ts: str, tz_name: str = "UTC") -> str:
+    from ..tools.timezones import friendly
+
+    return friendly(ts, tz_name)
 
 
-def summarize(trace: dict) -> dict:
+def summarize(trace: dict, tz_name: str = "UTC") -> dict:
     """Project a full trace entry down to what the dashboard table shows."""
     msg = trace.get("message") or {}
     verdict = trace.get("verdict") or {}
     return {
         "id": trace.get("id", ""),
-        "time": _format_time(trace.get("ts", "")),
+        "time": _format_time(trace.get("ts", ""), tz_name),
         "envelope_from": trace.get("envelope_from") or "<>",
         "subject": msg.get("subject") or "(no subject)",
         "to": ", ".join(trace.get("rcpt_tos") or []),
@@ -119,8 +117,9 @@ def summarize(trace: dict) -> dict:
     }
 
 
-def read_recent_summary(limit: int = 200, day: str | None = None) -> list[dict]:
-    return [summarize(t) for t in read_recent(limit=limit, day=day)]
+def read_recent_summary(limit: int = 200, day: str | None = None,
+                        tz_name: str = "UTC") -> list[dict]:
+    return [summarize(t, tz_name) for t in read_recent(limit=limit, day=day)]
 
 
 def prune(retention_days: int) -> int:
