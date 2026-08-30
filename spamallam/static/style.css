@@ -5,7 +5,8 @@
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text);
-       font: 15px/1.5 system-ui, "Segoe UI", sans-serif; }
+       font: 15px/1.5 system-ui, "Segoe UI", sans-serif;
+       display: flex; flex-direction: column; min-height: 100vh; }
 header { display: flex; align-items: center; gap: 1.5rem; padding: .7rem 1.2rem;
          background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .brand { font-weight: 700; font-size: 1.1rem; }
@@ -14,7 +15,9 @@ nav a { color: var(--muted); text-decoration: none; }
 nav a:hover { color: var(--accent); }
 .who { margin-left: auto; color: var(--muted); }
 .who a { color: var(--accent); }
-main { margin: 1.5rem auto; padding: 0 1.2rem; }
+main { margin: 1.5rem auto; padding: 0 1.2rem; flex: 1 0 auto; }
+.build-footer { flex-shrink: 0; display: flex; justify-content: center; align-items: baseline;
+  gap: .5rem; padding: .8rem 1.2rem; border-top: 1px solid var(--line); color: var(--muted); }
 h1 { font-size: 1.4rem; } h2 { font-size: 1.05rem; margin: 1rem 0 .4rem; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
         padding: 1rem 1.2rem; margin: 1rem 0; }

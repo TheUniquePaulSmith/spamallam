@@ -121,7 +121,13 @@ services:
       retries: 3
 
   spamallam:
-    build: ./spamallam
+    build:
+      context: ./spamallam
+      args:
+        # Release string for the admin UI footer. Set SPAMALLAM_VERSION in the
+        # environment (or .env) to the git tag / short hash before building —
+        # e.g. SPAMALLAM_VERSION="$(git describe --tags --always --dirty)".
+        SPAMALLAM_VERSION: ${SPAMALLAM_VERSION:-}
     container_name: spamallam-app
     restart: unless-stopped
     networks: [mailnet]
