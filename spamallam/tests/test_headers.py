@@ -34,6 +34,51 @@ def test_strip_noop_when_clean():
     assert removed == []
 
 
+def test_strip_catches_headers_smuggled_via_mixed_line_endings():
+    """A bare LF inside an otherwise-CRLF header block must not hide a header.
+
+    Splitting the block on one separator leaves the smuggled line embedded in
+    its predecessor, where the ^-anchored strip pattern never sees it -- and
+    everything downstream (rspamd's Lua plugin, MailPlus rules) trusts that
+    inbound X-SpamAllam-* headers cannot survive this function.
+    """
+    raw = (
+        b"From: alice@example.com\r\n"
+        b"Subject: hello\n"
+        b"X-SpamAllam-Whitelisted: yes; rule=domain:evil.example\r\n"
+        b"X-SpamAllam-Signature: v=1; ts=1; sig=deadbeef\r\n"
+        b"To: bob@example.com\r\n"
+        b"\r\n"
+        b"body\r\n"
+    )
+    cleaned, removed = hdr.strip_spam_headers(raw)
+    assert b"X-SpamAllam" not in cleaned
+    assert len(removed) == 2
+    assert b"From: alice@example.com" in cleaned
+    assert b"Subject: hello" in cleaned
+    assert b"To: bob@example.com" in cleaned
+    assert cleaned.endswith(b"\r\n\r\nbody\r\n")
+
+
+def test_strip_is_byte_exact_for_clean_mixed_ending_messages():
+    """DKIM signatures cover these bytes: a message with nothing to strip must
+    come back unchanged even when its line endings are inconsistent."""
+    for raw in (
+        b"From: a@b.c\nSubject: x\n\nbody\n",
+        b"From: a@b.c\r\nSubject: x\nTo: d@e.f\r\n\r\nbody\r\n",
+    ):
+        cleaned, removed = hdr.strip_spam_headers(raw)
+        assert cleaned == raw
+        assert removed == []
+
+
+def test_strip_handles_first_and_last_header_removal():
+    raw = b"X-Spam-Flag: YES\r\nFrom: a@b.c\r\nX-Spamd-Result: junk\r\n\r\nbody\r\n"
+    cleaned, removed = hdr.strip_spam_headers(raw)
+    assert cleaned == b"From: a@b.c\r\n\r\nbody\r\n"
+    assert len(removed) == 2
+
+
 def test_signature_matches_reference_hmac():
     verdict = hdr.SpamallamVerdict(
         verdict="phishing", confidence=0.97, category="credential phishing",

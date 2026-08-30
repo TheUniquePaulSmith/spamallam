@@ -74,6 +74,10 @@ label.row.compact { margin: 0; white-space: nowrap; }
 .inline-form { display: flex; gap: .6rem; align-items: flex-start; flex-wrap: wrap;
                margin: .6rem 0; }
 .inline-form input, .inline-form textarea { width: auto; flex: 1; min-width: 180px; }
+/* Sign-out is a POST (CSRF), so it is a form -- but it should read as a link. */
+.logout-form { display: inline-flex; margin: 0; }
+button.linklike { background: none; border: 0; padding: 0; font: inherit;
+  color: var(--accent); cursor: pointer; text-decoration: underline; }
 .toast-container { position: fixed; right: 1rem; bottom: 1rem; display: flex;
   flex-direction: column; gap: .5rem; z-index: 1000; }
 .toast { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--ok);

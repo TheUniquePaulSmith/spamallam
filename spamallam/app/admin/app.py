@@ -17,13 +17,15 @@ from fastapi.templating import Jinja2Templates
 from ..ai.engine import run_provider_test
 from ..config import ENV
 from ..deliver import reinject
+from ..pipeline import failure
 from ..pipeline import headers as hdr
 from ..pipeline import sanitize
 from ..store import audit, quarantine, rawlog, tracelog
 from ..store import users as users_store
 from ..store.secrets import SecretsBox, redact
 from ..store.settings import SETTINGS
-from ..tools import timezones
+from ..tools import timezones, webtools
+from ..tools.webtools import _host as _url_host
 from ..tools.unifi import read_suggestions
 from ..version import get_version
 from . import security, webauthn_flow
@@ -70,6 +72,7 @@ def _flash_url(url: str, flash: str, msg: str = "") -> str:
 # error flash, instead of the exception handler's default raw-JSON response.
 _HTML_ERROR_REDIRECT = {
     "/settings/ai": "/settings/ai",
+    "/settings/failure": "/settings/failure",
     "/settings/provider": "/settings/provider",
     "/settings/context": "/settings/context",
     "/settings/context/recipient": "/settings/context",
@@ -175,10 +178,12 @@ def create_app() -> FastAPI:
         _set_session(response, username)
         return response
 
-    @app.get("/logout")
-    async def logout(request: Request):
+    @app.post("/logout")
+    async def logout(request: Request, csrf: str = Form("")):
+        # POST + CSRF so a third-party page cannot sign the admin out.
         username = security.read_session(request)
         if username:
+            security.check_csrf(username, csrf)
             audit.record(username, "auth.logout", {})
         response = RedirectResponse("/login", status_code=303)
         response.delete_cookie(security.SESSION_COOKIE, path="/")
@@ -236,6 +241,8 @@ def create_app() -> FastAPI:
         traces = tracelog.read_recent_summary(limit=10, tz_name=users_store.get_timezone(username))
         return render(request, "dashboard.html", username,
                       cfg=cfg, provider_label=f"{cfg['provider']['type']}/{cfg['provider']['model']}",
+                      failure_policy={c: failure.resolve(cfg, c)
+                                      for c in (*failure.CONTROLS, "all_down")},
                       users=users_store.all_users(), traces=traces)
 
     @app.get("/api/traces/recent")
@@ -258,7 +265,7 @@ def create_app() -> FastAPI:
 
     @app.post("/settings/ai")
     async def ai_save(request: Request, csrf: str = Form(...),
-                      enabled: str = Form("off"), failure_mode: str = Form("fail_open"),
+                      enabled: str = Form("off"),
                       drop_threshold: float = Form(0.95), timeout_seconds: str = Form(""),
                       system_prompt: str = Form(""), pipeline_order: str = Form("ai_first"),
                       rspamd_bypass_on_reject: str = Form("")):
@@ -266,8 +273,9 @@ def create_app() -> FastAPI:
 
         username = security.require_admin(request)
         security.check_csrf(username, csrf)
-        if failure_mode not in ("fail_open", "tempfail"):
-            raise HTTPException(status_code=400, detail="bad failure_mode")
+        # ai.failure_mode is no longer written here: /settings/failure owns it
+        # (as failure_policy.ai). The legacy key is still READ as the fallback
+        # for deployments that have never opened the new page.
         if pipeline_order not in ("ai_first", "rspamd_first"):
             pipeline_order = "ai_first"
         # Blank -> None (fall back to the AI_TIMEOUT_SECONDS environment default)
@@ -285,7 +293,6 @@ def create_app() -> FastAPI:
             prompt_text = ""
         changes = SETTINGS.update({
             "ai.enabled": enabled == "on",
-            "ai.failure_mode": failure_mode,
             "ai.drop_threshold": max(0.5, min(1.0, drop_threshold)),
             "ai.timeout_seconds": timeout_val,
             "ai.system_prompt": prompt_text,
@@ -349,9 +356,37 @@ def create_app() -> FastAPI:
         audit.record_changes(username, changes)
         return RedirectResponse(_flash_url("/settings/provider", "saved", "Saved."), status_code=303)
 
+    # ------------------------------------------------- settings: failure policy
+    @app.get("/settings/failure", response_class=HTMLResponse)
+    async def failure_page(request: Request):
+        username = security.require_admin(request)
+        cfg = SETTINGS.all()
+        # Resolved (not raw) so a radio is always pre-selected even when the
+        # stored value is null and inherits the legacy ai.failure_mode.
+        resolved = {c: failure.resolve(cfg, c) for c in (*failure.CONTROLS, "all_down")}
+        return render(request, "failure.html", username, cfg=cfg, resolved=resolved,
+                      fail_symbols=cfg["failure_policy"]["antivirus_fail_symbols"])
+
+    @app.post("/settings/failure")
+    async def failure_save(request: Request, csrf: str = Form(...),
+                           ai: str = Form(failure.DELIVER_TAGGED),
+                           rspamd: str = Form(failure.DELIVER_TAGGED),
+                           antivirus: str = Form(failure.DELIVER_TAGGED),
+                           all_down: str = Form(failure.DELIVER_TAGGED)):
+        username = security.require_admin(request)
+        security.check_csrf(username, csrf)
+        values = {"ai": ai, "rspamd": rspamd, "antivirus": antivirus, "all_down": all_down}
+        for key, value in values.items():
+            if value not in failure.VALID:
+                raise HTTPException(status_code=400, detail=f"bad {key} policy {value!r}")
+        changes = SETTINGS.update({f"failure_policy.{k}": v for k, v in values.items()})
+        audit.record_changes(username, changes)
+        return RedirectResponse(_flash_url("/settings/failure", "saved", "Saved."), status_code=303)
+
     @app.post("/api/provider/test")
     async def provider_test(request: Request):
         username = security.require_admin(request)
+        security.check_csrf_header(username, request)
         audit.record(username, "provider.test", {})
         return await run_provider_test()
 
@@ -363,6 +398,7 @@ def create_app() -> FastAPI:
         from ..providers.openai_provider import OpenAIProvider
 
         username = security.require_admin(request)
+        security.check_csrf_header(username, request)
         body = await request.json()
         ptype = str(body.get("ptype", "")).lower()
         base_url = str(body.get("base_url", "")).strip()
@@ -372,11 +408,20 @@ def create_app() -> FastAPI:
         if ptype == "custom" and not base_url:
             raise HTTPException(status_code=400, detail="custom provider requires a base_url")
 
+        if base_url and await webtools._resolves_to_unsafe_address(_url_host(base_url)):
+            raise HTTPException(status_code=400,
+                                detail="base_url resolves to a private/internal address")
+
         box = _box()
         saved = SETTINGS.all()["provider"]
         if not api_key:
-            # blank key in the (unsaved) form = use whatever is already stored
-            if saved.get("type") == ptype and SecretsBox.is_encrypted(saved.get("api_key")):
+            # Blank key in the (unsaved) form = use whatever is already stored --
+            # but only when the form still points at the endpoint that key was
+            # saved for. Otherwise this route decrypts the stored LLM key and
+            # sends it as a bearer token to an operator-supplied host.
+            same_endpoint = (saved.get("base_url") or "").strip() == base_url
+            if (saved.get("type") == ptype and same_endpoint
+                    and SecretsBox.is_encrypted(saved.get("api_key"))):
                 api_key = box.decrypt_str(saved["api_key"])
 
         ssl_ctx = None
@@ -488,6 +533,7 @@ def create_app() -> FastAPI:
             "tools.unifi_block.network_list": str(form.get("unifi_network_list", "spamallam-blocked")).strip(),
             "tools.unifi_block.site": str(form.get("unifi_site", "default")).strip() or "default",
             "tools.unifi_block.max_prefix": max(16, min(32, int(form.get("unifi_max_prefix", 24) or 24))),
+            "tools.unifi_block.skip_verify": on("unifi_skip_verify"),
         }
         ws_key = str(form.get("web_search_api_key", "")).strip()
         if ws_key:
@@ -510,7 +556,8 @@ def create_app() -> FastAPI:
     async def overrides_save(request: Request, csrf: str = Form(...),
                              whitelist_domains: str = Form(""),
                              whitelist_recipients: str = Form(""),
-                             blocklist_domains: str = Form("")):
+                             blocklist_domains: str = Form(""),
+                             require_auth_for_whitelist: str = Form("")):
         username = security.require_admin(request)
         security.check_csrf(username, csrf)
 
@@ -521,6 +568,7 @@ def create_app() -> FastAPI:
             "overrides.whitelist_domains": lines(whitelist_domains),
             "overrides.whitelist_recipients": lines(whitelist_recipients),
             "overrides.blocklist_domains": lines(blocklist_domains),
+            "overrides.require_auth_for_whitelist": require_auth_for_whitelist == "on",
         })
         audit.record_changes(username, changes)
         return RedirectResponse(_flash_url("/settings/overrides", "saved", "Saved."), status_code=303)
@@ -659,12 +707,13 @@ def create_app() -> FastAPI:
 
     @app.get("/logs/raw/{day}/{trace_id}")
     async def logs_raw(request: Request, day: str, trace_id: str):
-        security.require_admin(request)
+        username = security.require_admin(request)
         if not _DAY_RE.match(day) or not _TRACE_ID_RE.match(trace_id):
             raise HTTPException(status_code=400, detail="bad id")
         data = rawlog.read(trace_id, day)
         if data is None:
             raise HTTPException(status_code=404, detail="not found")
+        audit.record(username, "logs.raw_download", {"id": trace_id, "day": day})
         # Forced download, never rendered inline: this is a dropped phishing/
         # malicious message and may still contain live links/tracking pixels
         # in its text/html part.
@@ -713,13 +762,26 @@ def create_app() -> FastAPI:
     @app.get("/quarantine", response_class=HTMLResponse)
     async def quarantine_page(request: Request, q: str = "", day: str = "", show: str = ""):
         username = security.require_user(request)
+        if day and not _DAY_RE.match(day):
+            raise HTTPException(status_code=400, detail="bad day")
         is_admin = _is_admin(username)
         show_all = is_admin and show == "all"
         entries = quarantine.list_entries(
             limit=1000, day=day or None, include_tombstones=show_all
         )
         if not is_admin:
-            entries = [e for e in entries if _can_see_entry(username, e)]
+            # Resolve the user once rather than per entry: _can_see_entry re-reads
+            # and re-parses users.yml on every call, under a global lock, on the
+            # event loop shared with the SMTP filter.
+            user = users_store.get_user(username)
+            visible = []
+            for e in entries:
+                owned = users_store.owned_recipients(user, e.get("rcpt_tos", []))
+                if owned:
+                    # What Release will actually deliver to (see quarantine_release).
+                    e["release_rcpts"] = owned
+                    visible.append(e)
+            entries = visible
         if q:
             needle = q.lower()
             entries = [
@@ -735,10 +797,15 @@ def create_app() -> FastAPI:
 
     @app.get("/quarantine/{day}/{entry_id}/preview", response_class=HTMLResponse)
     async def quarantine_preview(request: Request, day: str, entry_id: str):
-        _load_entry_for_action(request, day, entry_id)
+        username, entry = _load_entry_for_action(request, day, entry_id)
         raw = quarantine.get_original(entry_id, day)
         if raw is None:
             raise HTTPException(status_code=404, detail="message body no longer available")
+        # Reading a quarantined body is the most sensitive read in the product;
+        # without this the audit trail covers mutations only.
+        audit.record(username, "quarantine.preview", {
+            "id": entry_id, "day": day, "envelope_from": entry.get("envelope_from", ""),
+        })
         # Its own locked-down policy (middleware uses setdefault, so these win):
         # no script, no network, safe to render attacker HTML in a sandboxed,
         # same-origin iframe.
@@ -759,11 +826,19 @@ def create_app() -> FastAPI:
                                  whitelist_sender: str = Form("")):
         username, entry = _load_entry_for_action(request, day, entry_id)
         security.check_csrf(username, csrf)
+        is_admin = _is_admin(username)
         raw = quarantine.get_original(entry_id, day)
         if raw is None:
             raise HTTPException(status_code=404, detail="message body no longer available")
 
-        rcpts = entry.get("rcpt_tos") or []
+        # A non-admin may see a multi-recipient message because ONE of its
+        # recipients is theirs; releasing it must not deliver to the others.
+        # Without this, any user could push attacker-authored mail the gateway
+        # already classified as malicious into a co-recipient's mailbox.
+        all_rcpts = entry.get("rcpt_tos") or []
+        rcpts = all_rcpts if is_admin else users_store.owned_recipients(
+            users_store.get_user(username), all_rcpts
+        )
         if not rcpts:
             raise HTTPException(status_code=400, detail="no recipients recorded for this message")
         mail_from = entry.get("envelope_from") or ""
@@ -782,7 +857,10 @@ def create_app() -> FastAPI:
         quarantine.mark(entry_id, day, quarantine.STATUS_RELEASED, username)
 
         wl_added = ""
-        if whitelist_sender == "on":
+        # overrides.whitelist_domains is GLOBAL and a total filter override (it
+        # suppresses the AI drop, the rspamd reject and therefore ClamAV), so it
+        # stays admin-only here exactly as it is on /settings/overrides.
+        if whitelist_sender == "on" and is_admin:
             from ..pipeline.overrides import _domain_of
             dom = _domain_of(mail_from) or _domain_of(entry.get("from_header", ""))
             if dom:
@@ -894,12 +972,14 @@ def create_app() -> FastAPI:
     @app.post("/api/passkey/options")
     async def passkey_options(request: Request):
         username = security.require_user(request)
+        security.check_csrf_header(username, request)
         options, sealed = webauthn_flow.registration_options(username)
         return {"options": json.loads(options), "sealed": sealed}
 
     @app.post("/api/passkey/verify")
     async def passkey_verify(request: Request):
         username = security.require_user(request)
+        security.check_csrf_header(username, request)
         body = await request.json()
         webauthn_flow.verify_registration(request, username, body,
                                           body.get("label", "passkey"))

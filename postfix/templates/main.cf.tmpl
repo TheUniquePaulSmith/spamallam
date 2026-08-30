@@ -23,8 +23,13 @@ relay_domains = ${MAIL_DOMAINS_SPACED}
 relayhost = [${MAILSERVER_HOST}]:${MAILSERVER_PORT}
 recipient_delimiter = +
 
-# Only this stack's docker subnet + loopback are ever trusted.
-mynetworks = 127.0.0.0/8 [::1]/128 ${DOCKER_SUBNET}
+# Exactly one address is trusted to re-inject: the spamallam container's own
+# /32 on the filter network (plus loopback, and MYNETWORKS_EXTRA if the operator
+# set it). This used to be the whole docker subnet, which meant every container
+# in the stack -- rspamd, redis, clamav, acme -- was implicitly trusted to
+# deliver arbitrary mail to the internal server without any filtering.
+# Composed in entrypoint.sh; see docs/SECURITY.md.
+mynetworks = 127.0.0.0/8 [::1]/128 ${POSTFIX_MYNETWORKS}
 
 # ---- Message limits / anti-abuse -------------------------------------------
 message_size_limit = ${MESSAGE_SIZE_LIMIT}
@@ -72,6 +77,16 @@ smtpd_data_restrictions =
     reject_multi_recipient_bounce
 
 ${RELAY_RECIPIENT_MAPS_LINE}
+
+# ---- Edge header strip (defence in depth) ----------------------------------
+# The whole downstream trust chain rests on inbound X-SpamAllam-* headers being
+# impossible to smuggle past the edge. spamallam strips them in Python and logs
+# the attempt; this drops the one header that actually grants trust, before
+# cleanup even hands the message to the content filter. Only the signature is
+# listed so the Python side still sees (and logs) the rest as a spoofing signal.
+# This is safe for our OWN freshly-signed headers because the :10025
+# re-injection listener sets no_header_body_checks (see master.cf.tmpl).
+header_checks = pcre:/etc/postfix/header_checks
 
 # Dynamic recipient verification (only active in RECIPIENT_VALIDATION=verify)
 address_verify_map = sdbm:$data_directory/verify_cache

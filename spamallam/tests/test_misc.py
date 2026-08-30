@@ -1,8 +1,13 @@
 from app.ai.engine import parse_verdict
 from app.ai.summarize import summarize
 from app.tools import providers_db
-from app.tools.unifi import rollup
+from app.tools import unifi as unifi_mod
+from app.tools.unifi import rollup, unifi_block
 from app.tools.webtools import forbidden_reason
+
+
+async def _no_rdns(ip):
+    return ""
 
 RAW = (
     b"From: \"OpenSea\" <alert@fake-opensea.xyz>\r\n"
@@ -51,6 +56,37 @@ def test_cidr_rollup_capped():
     # requested /8 but capped at /24
     assert rollup("203.0.113.77", 8, 24) == "203.0.113.0/24"
     assert rollup("203.0.113.77", 32, 24) == "203.0.113.77/32"
+
+
+_UNIFI_CFG = {"tools": {"unifi_block": {"enabled": True, "policy": "auto", "max_prefix": 24}}}
+
+
+async def test_unifi_block_refuses_an_ip_that_did_not_send_the_message():
+    """Message content is attacker-controlled, so an injected instruction must
+    not be able to aim a firewall block at an arbitrary third party."""
+    result = await unifi_block(
+        {"ip": "45.33.32.156", "reason": "injected"}, _UNIFI_CFG, box=None,
+        summary={"client_ip": "8.8.8.8"},
+    )
+    assert result["refused"] is True
+    assert "did not deliver this message" in result["reason"]
+
+
+async def test_unifi_block_refuses_when_no_client_ip_was_recorded():
+    result = await unifi_block(
+        {"ip": "45.33.32.156"}, _UNIFI_CFG, box=None, summary={},
+    )
+    assert result["refused"] is True
+
+
+async def test_unifi_block_allows_the_actual_sender(monkeypatch):
+    monkeypatch.setattr(unifi_mod.netinfo, "rdns_cached", _no_rdns)
+    result = await unifi_block(
+        {"ip": "45.33.32.156", "prefix": 32}, _UNIFI_CFG, box=None,
+        summary={"client_ip": "45.33.32.156"},
+    )
+    assert not result.get("refused")
+    assert result["cidr"] == "45.33.32.156/32"  # max_prefix caps width, not this
 
 
 # ---- RIR / RDAP ownership parsing ------------------------------------------

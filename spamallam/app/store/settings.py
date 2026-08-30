@@ -44,6 +44,25 @@ DEFAULTS: dict[str, Any] = {
         # final outcome, it only saves the LLM API call.
         "rspamd_bypass_on_reject": False,
     },
+    # What happens when a security control cannot run. See app/pipeline/failure.py
+    # and docs/FAILURE-POLICY.md. Values: deliver_tagged | defer | quarantine.
+    "failure_policy": {
+        # null = inherit the legacy ai.failure_mode above (resolved on read, so
+        # an existing settings.yml keeps its behavior without a migration).
+        "ai": None,
+        "rspamd": "deliver_tagged",
+        "antivirus": "deliver_tagged",
+        # Used INSTEAD of the per-control values when every enabled control
+        # failed on one message -- i.e. nothing inspected it at all. Defaults to
+        # deliver_tagged only to preserve today's behavior on upgrade; "defer"
+        # is the right value for anyone who wants the gateway to mean something
+        # during an outage.
+        "all_down": "deliver_tagged",
+        # rspamd symbols that mean "an antivirus engine could not scan this".
+        # VIRUSTOTAL_VIRUS_FAIL is deliberately absent: a VT rate-limit should
+        # not defer mail.
+        "antivirus_fail_symbols": ["CLAM_VIRUS_FAIL"],
+    },
     "provider": {
         # openai | anthropic | custom
         "type": "openai",
@@ -95,12 +114,23 @@ DEFAULTS: dict[str, Any] = {
             "network_list": "spamallam-blocked",
             "max_prefix": 24,    # never roll up wider than /24 (v4)
             "site": "default",
+            # Skip verifying the UniFi controller's TLS chain. The API key is
+            # sent on this connection, so leave this off unless the controller
+            # uses a self-signed certificate.
+            "skip_verify": False,
         },
     },
     "overrides": {
         "whitelist_domains": [],
         "whitelist_recipients": [],
         "blocklist_domains": [],
+        # Honor a sender-domain whitelist hit only when rspamd confirms the
+        # sender with DMARC alignment (or SPF, for an envelope-sender match).
+        # Both the envelope sender and the From: header are forgeable, and a
+        # whitelist hit skips AI, rspamd AND ClamAV -- so with this off, one
+        # known whitelisted domain is a complete filter bypass for anyone.
+        # Recipient whitelist rules are unaffected either way.
+        "require_auth_for_whitelist": True,
     },
     "marking": {
         "enabled": False,

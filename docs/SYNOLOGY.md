@@ -59,7 +59,7 @@ docker exec spamallam-postfix ip route
 ```
 
 The `default` line must go via `MACVLAN_GATEWAY` (your mail LAN's router), not
-the `mailnet` bridge gateway (`DOCKER_SUBNET`'s `.1`). It should always be
+the `delivernet` bridge gateway (`DOCKER_SUBNET`'s `.1`). It should always be
 correct — the entrypoint fails the container outright (check `docker logs
 spamallam-postfix`) if it can't find an interface holding
 `POSTFIX_MACVLAN_IP`. A wrong-but-running result would mean something
@@ -80,11 +80,11 @@ macvlan child (postfix, on `mailwan`) and the physical host that owns the
 parent interface — even though they're on the same subnet, the kernel blocks
 it. Mail queues up as `Host is unreachable` and never gets delivered; it will
 look like everything is working (accepted, scanned, reinjected) right up
-until this last hop. Use the `mailnet` docker bridge gateway IP instead — that
+until this last hop. Use the `delivernet` docker bridge gateway IP instead — that
 path never touches the macvlan interface, so it isn't affected:
 
 ```bash
-docker network inspect spamallam_mailnet --format '{{(index .IPAM.Config 0).Gateway}}'
+docker network inspect spamallam_delivernet --format '{{(index .IPAM.Config 0).Gateway}}'
 docker exec spamallam-postfix nc -zv -w5 <that-gateway-ip> <MAILSERVER_PORT>
 ```
 
@@ -124,9 +124,9 @@ docker exec spamallam-postfix mailq
 
 ### Trust the gateway as an internal relay
 
-Because the relay hop targets the `mailnet` bridge gateway rather than going
+Because the relay hop targets the `delivernet` bridge gateway rather than going
 out via `mailwan`, MailPlus sees the connection arrive from **postfix's own
-address on the `mailnet` bridge** — i.e. from within `DOCKER_SUBNET` (default
+address on the `delivernet` bridge** — i.e. from within `DOCKER_SUBNET` (default
 `172.28.0.0/24`), the same as it would with plain bridge networking and no
 macvlan involved. It is *not* `POSTFIX_MACVLAN_IP`.
 

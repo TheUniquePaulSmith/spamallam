@@ -73,7 +73,9 @@ fetched (activation-link protection).</p>
     <span><strong>Suggest only</strong> (default) — record recommendations for admin review, push nothing</span></label>
   <label class="row"><input type="radio" name="unifi_policy" value="auto"
     {{ 'checked' if cfg.tools.unifi_block.policy == 'auto' }}>
-    <span><strong>Auto</strong> — push blocks to the UniFi Network List (shared-provider IPs always refused)</span></label>
+    <span><strong>Auto</strong> — push blocks to the UniFi Network List. Always refused:
+      shared-provider IPs, private/reserved space, and any address that is not the one
+      that actually delivered the message being analyzed.</span></label>
   <div class="cols">
     <label>UniFi URL <input name="unifi_url" value="{{ cfg.tools.unifi_block.url }}"
       placeholder="https://192.168.1.1"></label>
@@ -86,6 +88,10 @@ fetched (activation-link protection).</p>
   </div>
   <label>API key <span class="muted">(stored encrypted; current: {{ tools.unifi_block.api_key or 'not set' }})</span>
     <input type="password" name="unifi_api_key" autocomplete="off"></label>
+  <label class="row"><input type="checkbox" name="unifi_skip_verify"
+    {{ 'checked' if cfg.tools.unifi_block.skip_verify }}>
+    <span>Skip TLS certificate verification for the controller — the API key above is sent
+      on this connection, so enable this only for a self-signed controller certificate</span></label>
 
   {% if is_admin %}<button class="primary">Save all tools</button>{% endif %}
 </form>

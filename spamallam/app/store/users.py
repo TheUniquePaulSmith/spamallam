@@ -64,16 +64,24 @@ def normalize_addresses(addresses: list[str] | None) -> list[str]:
     return seen
 
 
+def owned_recipients(user: dict[str, Any] | None, rcpt_tos: list[str]) -> list[str]:
+    """The subset of `rcpt_tos` addressed to this user, in original envelope form.
+
+    Releasing from quarantine delivers only to these: seeing a message because
+    you are one of its recipients must not let you deliver it to the others.
+    Admins bypass this at the call site."""
+    if not user:
+        return []
+    owned = {a for a in (normalize_address(x) for x in user.get("addresses", []) or []) if a}
+    if not owned:
+        return []
+    return [r for r in rcpt_tos or [] if normalize_address(r) in owned]
+
+
 def user_can_see_address(user: dict[str, Any] | None, rcpt_tos: list[str]) -> bool:
     """True when any envelope recipient normalizes to one of the user's owned
     addresses. Admins bypass this check at the call site."""
-    if not user:
-        return False
-    owned = {a for a in (normalize_address(x) for x in user.get("addresses", []) or []) if a}
-    if not owned:
-        return False
-    got = {a for a in (normalize_address(r) for r in rcpt_tos or []) if a}
-    return bool(owned & got)
+    return bool(owned_recipients(user, rcpt_tos))
 
 
 def _users_path() -> Path:

@@ -41,7 +41,8 @@ def rollup(ip: str, prefix: int, max_prefix: int) -> str:
     return str(net)
 
 
-async def unifi_block(args: dict[str, Any], cfg: dict[str, Any], box: SecretsBox) -> dict[str, Any]:
+async def unifi_block(args: dict[str, Any], cfg: dict[str, Any], box: SecretsBox,
+                      summary: dict[str, Any] | None = None) -> dict[str, Any]:
     ucfg = cfg["tools"]["unifi_block"]
     ip = str(args.get("ip", "")).strip()
     reason = str(args.get("reason", "")).strip()[:300]
@@ -55,6 +56,26 @@ async def unifi_block(args: dict[str, Any], cfg: dict[str, Any], box: SecretsBox
         return {"refused": True, "reason": "IPv6 blocking not supported; refusing"}
     if addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_multicast:
         return {"refused": True, "reason": "refusing to block private/reserved address space"}
+
+    # The only IP this message can justify blocking is the one that delivered it.
+    # Message content is attacker-controlled, so without this an injected
+    # instruction can aim the block at any public address it likes -- a
+    # competitor's MX, a partner's office range, an upstream resolver.
+    client_ip = str((summary or {}).get("client_ip", "")).strip()
+    if not client_ip:
+        return {"refused": True, "ip": ip,
+                "reason": "no connecting client IP recorded for this message; refusing to block"}
+    if ip != client_ip:
+        audit_record("spamallam-ai", "unifi_block.refused",
+                     {"ip": ip, "client_ip": client_ip, "reason": reason,
+                      "refused_because": "target is not the connecting client"})
+        return {
+            "refused": True,
+            "ip": ip,
+            "client_ip": client_ip,
+            "reason": (f"{ip} did not deliver this message ({client_ip} did). Only the "
+                       "connecting client may be blocked, and only from its own message."),
+        }
 
     # Guardrail: shared mail providers are never blockable
     hostname = await netinfo.rdns_cached(ip)
@@ -126,8 +147,11 @@ async def push_block(cfg: dict[str, Any], box: SecretsBox, cidr: str) -> dict[st
     site = ucfg.get("site", "default")
     group_name = ucfg.get("network_list", "spamallam-blocked")
 
+    # The API key is a bearer credential, so the channel is verified by default.
+    # Controllers with a self-signed cert need skip_verify set explicitly.
+    verify = not bool(ucfg.get("skip_verify", False))
     headers = {"X-API-KEY": api_key, "Accept": "application/json"}
-    async with httpx.AsyncClient(timeout=20, verify=False, headers=headers) as client:
+    async with httpx.AsyncClient(timeout=20, verify=verify, headers=headers) as client:
         # UniFi OS consoles use the /proxy/network prefix; bare controllers do not.
         for prefix in ("/proxy/network", ""):
             list_url = f"{base}{prefix}/api/s/{site}/rest/firewallgroup"

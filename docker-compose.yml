@@ -2,13 +2,19 @@
 #
 # Internet :25 --(gateway port-forward)--> postfix:2525 -> spamallam (AI) -> rspamd -> internal mail server
 #
-# No privileged ports are used anywhere in this stack. postfix is dual-homed:
-#   - mailnet: internal docker bridge, used only to reach spamallam/rspamd.
-#   - mailwan: macvlan on the dedicated mail LAN, giving postfix its own real
-#     IP/MAC. Docker's normal port-publish path (NAT/docker-proxy) can rewrite
-#     the client's source IP to the docker bridge gateway address, which then
-#     falls inside `mynetworks` and turns permit_mynetworks into an accidental
-#     open relay — macvlan avoids that translation entirely. See docs/SECURITY.md.
+# No privileged ports are used anywhere in this stack. postfix is triple-homed:
+#   - mailwan:    macvlan on the dedicated mail LAN, giving postfix its own real
+#                 IP/MAC. Docker's normal port-publish path (NAT/docker-proxy) can
+#                 rewrite the client's source IP to the docker bridge gateway
+#                 address, which then falls inside `mynetworks` and turns
+#                 permit_mynetworks into an accidental open relay — macvlan avoids
+#                 that translation entirely. See docs/SECURITY.md.
+#   - filternet:  the only network shared with spamallam, and the only thing
+#                 inside `mynetworks`.
+#   - delivernet: the route to MAILSERVER_HOST. Never trusted for re-injection.
+#
+# See docs/FIREWALL.md for the full traffic model and the network/host rules that
+# enforce the parts Docker cannot.
 #
 # Configure your gateway (e.g. UniFi) to forward WAN :25 -> ${POSTFIX_MACVLAN_IP}:2525
 # (and WAN :587 -> ${POSTFIX_MACVLAN_IP}:2587 if enabled) — NOT at the docker host.
@@ -17,14 +23,18 @@
 
 name: spamallam
 
+# Networks are segmented so that being able to open a TCP connection to
+# postfix:10025 is no longer the same thing as being trusted to inject mail.
+# That re-injection listener skips the content filter entirely, so anything
+# that reaches it delivers straight to the internal mail server unscanned.
+#
+# The invariant: postfix and spamallam share EXACTLY ONE network (filternet),
+# and nothing else is ever attached to it. mynetworks is then a single /32.
+#
+# Each container that publishes a port has exactly one non-internal network, so
+# Docker's choice of default route and DNAT endpoint stays deterministic (this
+# Engine has no `gw_priority` -- see the postfix `networks:` comment below).
 networks:
-  mailnet:
-    driver: bridge
-    ipam:
-      config:
-        # Fixed subnet so postfix can scope mynetworks to exactly this network
-        - subnet: ${DOCKER_SUBNET:-172.28.0.0/24}
-
   mailwan:
     # Direct-LAN network for postfix only, so inbound SMTP arrives with the
     # real client source IP instead of a NAT/proxy-rewritten one.
@@ -35,6 +45,47 @@ networks:
       config:
         - subnet: ${MACVLAN_SUBNET:?set MACVLAN_SUBNET in .env}
           gateway: ${MACVLAN_GATEWAY:?set MACVLAN_GATEWAY in .env}
+
+  delivernet:
+    # postfix ONLY. Its gateway is the docker host, which is how postfix reaches
+    # MAILSERVER_HOST when the mail server runs on the same box (macvlan cannot
+    # reach the host's own parent interface). Keeps DOCKER_SUBNET's name, default
+    # and meaning, so existing MAILSERVER_HOST / MailPlus allow-list values still
+    # work -- but it is deliberately NOT part of mynetworks any more.
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${DOCKER_SUBNET:-172.28.0.0/24}
+
+  filternet:
+    # postfix <-> spamallam only: the content-filter hop (:10026) and the
+    # re-injection hop (:10025). internal, because nothing on it needs to leave.
+    # A /29 has six usable addresses -- there is no room for a stray container,
+    # and adding one fails loudly at `docker compose up`.
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: ${FILTER_SUBNET:-172.28.1.0/29}
+
+  scannet:
+    # spamallam <-> rspamd <-> redis <-> clamav. Not internal: rspamd needs RBLs
+    # and fuzzy storage, clamav needs freshclam, spamallam needs its LLM provider.
+    # Crucially, postfix is NOT here, so a compromised scanner cannot reach the
+    # re-injection listener at all.
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${SCAN_SUBNET:-172.28.2.0/24}
+
+  acmenet:
+    # acme alone. It holds DNS-provider credentials and is the only writer to the
+    # certs volume, so it gets no reachability to any other container -- its only
+    # legitimate peers are the ACME server and the DNS provider API.
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${ACME_SUBNET:-172.28.3.0/28}
 
 volumes:
   postfix-spool:      # postfix queue (survives restarts so queued mail is not lost)
@@ -63,7 +114,11 @@ services:
     networks:
       mailwan:
         ipv4_address: ${POSTFIX_MACVLAN_IP:?set POSTFIX_MACVLAN_IP in .env}
-      mailnet: {}
+      # Static, because master.cf binds the re-injection listener to this exact
+      # address and spamallam re-injects to it by IP (no DNS in the mail path).
+      filternet:
+        ipv4_address: ${FILTER_POSTFIX_IP:-172.28.1.2}
+      delivernet: {}
     # No `ports:` — postfix listens on :2525/:2587 (postfix/templates/master.cf.tmpl)
     # directly on POSTFIX_MACVLAN_IP; nothing to publish/NAT via the docker host.
     #
@@ -100,7 +155,14 @@ services:
       POSTSCREEN_DNSBL_SITES: ${POSTSCREEN_DNSBL_SITES:-zen.spamhaus.org*3 bl.spamcop.net*2}
       POSTSCREEN_DNSBL_THRESHOLD: ${POSTSCREEN_DNSBL_THRESHOLD:-3}
       TLS_CERT_NAME: ${TLS_CERT_NAME:-${MAIL_HOSTNAME}}
-      DOCKER_SUBNET: ${DOCKER_SUBNET:-172.28.0.0/24}
+      # mynetworks is exactly these two addresses -- the spamallam container and
+      # nothing else. DOCKER_SUBNET is deliberately NOT passed any more: the
+      # delivery network must never be able to re-inject.
+      FILTER_POSTFIX_IP: ${FILTER_POSTFIX_IP:-172.28.1.2}
+      FILTER_SPAMALLAM_IP: ${FILTER_SPAMALLAM_IP:-172.28.1.3}
+      # Extra CIDRs to trust for re-injection. Empty by default; only needed for
+      # something like a second spamallam replica. See docs/SECURITY.md.
+      MYNETWORKS_EXTRA: ${MYNETWORKS_EXTRA:-}
     volumes:
       - postfix-spool:/var/spool/postfix
       - certs:/certs:ro
@@ -130,7 +192,10 @@ services:
         SPAMALLAM_VERSION: ${SPAMALLAM_VERSION:-}
     container_name: spamallam-app
     restart: unless-stopped
-    networks: [mailnet]
+    networks:
+      filternet:
+        ipv4_address: ${FILTER_SPAMALLAM_IP:-172.28.1.3}
+      scannet: {}
     ports:
       # Admin UI (HTTPS). Defaults to loopback of the docker host only.
       # Set ADMIN_BIND to e.g. "192.168.1.10:8443" to expose on your LAN. NEVER expose to WAN.
@@ -142,10 +207,18 @@ services:
       SECRETS_KEY: ${SECRETS_KEY:?set SECRETS_KEY in .env}
       SETUP_TOKEN: ${SETUP_TOKEN:-}
       RSPAMD_URL: http://rspamd:11333
-      REDIS_URL: redis://redis:6379/1
-      REINJECT_HOST: postfix
+      REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}@redis:6379/1
+      # By IP, not name: spamallam is multi-homed, and the mail path should not
+      # depend on which endpoint Docker's resolver happens to answer with.
+      REINJECT_HOST: ${FILTER_POSTFIX_IP:-172.28.1.2}
       REINJECT_PORT: "10025"
       SMTP_LISTEN_PORT: "10026"
+      # Bind the content-filter listener to filternet only. Left on 0.0.0.0 it
+      # also listens on scannet, where rspamd/redis/clamav could feed it forged
+      # XFORWARD client data and launder a signed verdict out of it.
+      SMTP_LISTEN_HOST: ${FILTER_SPAMALLAM_IP:-172.28.1.3}
+      # Only the edge MTA may rewrite the client IP/HELO that rspamd scores.
+      XFORWARD_TRUSTED_PEERS: ${FILTER_POSTFIX_IP:-172.28.1.2}
       ADMIN_PORT: "8443"
       ADMIN_EXTERNAL_HOST: ${ADMIN_EXTERNAL_HOST:-}
       # The host-published port from ADMIN_BIND (e.g. 25443), used only to build
@@ -180,13 +253,14 @@ services:
     build: ./rspamd
     container_name: spamallam-rspamd
     restart: unless-stopped
-    networks: [mailnet]
+    networks: [scannet]
     ports:
       # rspamd web UI / controller. Loopback of docker host by default; LAN at your choice. NEVER WAN.
       - "${RSPAMD_UI_BIND:-127.0.0.1:11334}:11334"
     environment:
       RSPAMD_PASSWORD: ${RSPAMD_PASSWORD:?set RSPAMD_PASSWORD in .env}
       HEADER_HMAC_KEY: ${HEADER_HMAC_KEY}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
       VT_API_KEY: ${VT_API_KEY:-}
       SPAMALLAM_SPAM_WEIGHT: ${SPAMALLAM_SPAM_WEIGHT:-6.0}
       SPAMALLAM_PHISH_WEIGHT: ${SPAMALLAM_PHISH_WEIGHT:-8.0}
@@ -207,8 +281,13 @@ services:
     image: redis:7-alpine
     container_name: spamallam-redis
     restart: unless-stopped
-    networks: [mailnet]
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "${REDIS_MAXMEMORY:-256mb}", "--maxmemory-policy", "volatile-lru"]
+    networks: [scannet]
+    # requirepass, because network reachability is not authentication: redis
+    # holds rspamd's bayes corpus and greylist state, so anything that can write
+    # to it can retrain the classifier or poison scoring.
+    command: ["redis-server", "--appendonly", "yes",
+              "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}",
+              "--maxmemory", "${REDIS_MAXMEMORY:-256mb}", "--maxmemory-policy", "volatile-lru"]
     volumes:
       - redis-data:/data
     cap_drop: [ALL]
@@ -223,11 +302,19 @@ services:
     image: clamav/clamav:stable
     container_name: spamallam-clamav
     restart: unless-stopped
-    networks: [mailnet]
+    networks: [scannet]
     environment:
       CLAMAV_NO_FRESHCLAMD: "false"
     volumes:
       - clamav-db:/var/lib/clamav
+    cap_drop: [ALL]
+    # Same treatment as its siblings: this is the container that parses hostile
+    # attachments, so it should not be the one service without any hardening.
+    # clamd's entrypoint starts as root, fixes ownership of the signature volume,
+    # then drops to the clamav user.
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "clamdcheck.sh"]
       interval: 60s
@@ -237,7 +324,7 @@ services:
     build: ./acme
     container_name: spamallam-acme
     restart: unless-stopped
-    networks: [mailnet]
+    networks: [acmenet]
     environment:
       ACME_DNS_PROVIDER: ${ACME_DNS_PROVIDER:-}
       ACME_EMAIL: ${ACME_EMAIL:-}

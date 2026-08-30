@@ -87,6 +87,16 @@ def check_csrf(username: str, token: str) -> None:
         raise HTTPException(status_code=403, detail="bad CSRF token")
 
 
+def check_csrf_header(username: str, request: Request) -> None:
+    """CSRF for the JSON API routes, which post no form body.
+
+    SameSite=Strict already blocks the cross-site case; this is the second
+    layer, so that these endpoints do not depend on one cookie attribute alone.
+    static/app.js reads the token from the <meta name="csrf-token"> in base.html.
+    """
+    check_csrf(username, request.headers.get("x-csrf-token", ""))
+
+
 # ---- WebAuthn relying-party identity ---------------------------------------
 
 def rp_id() -> str:

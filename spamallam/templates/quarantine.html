@@ -66,9 +66,12 @@
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <input type="hidden" name="entry_id" value="{{ e.id }}">
         <input type="hidden" name="day" value="{{ e.day }}">
+        {% if is_admin %}
         <label class="row"><input type="checkbox" name="whitelist_sender">
-          <span>also whitelist this sender's domain</span></label>
-        <button class="primary" data-confirm="Release this message for delivery to {{ e.rcpt_tos|join(', ') }}?">Release</button>
+          <span>also whitelist this sender's domain — applies to <strong>all</strong> recipients,
+            and permanently exempts it from AI, rspamd and antivirus checks</span></label>
+        {% endif %}
+        <button class="primary" data-confirm="Release this message for delivery to {{ (e.release_rcpts if e.release_rcpts else e.rcpt_tos)|join(', ') }}?">Release</button>
       </form>
       <form method="post" action="/quarantine/delete" class="inline-form">
         <input type="hidden" name="csrf" value="{{ csrf }}">

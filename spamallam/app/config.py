@@ -15,6 +15,42 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
+# Prefixes of the placeholder values shipped in .env.example. A deployment
+# still carrying one of these is unconfigured, not merely weakly configured.
+_PLACEHOLDER_PREFIXES = ("change-me", "changeme", "your-", "replace-me")
+
+# "openssl rand -hex 32" is 64 chars; 32 is the floor for a hand-picked
+# passphrase. The key derivation (store/secrets.py) is a plain SHA-256 rather
+# than a slow KDF, so this length check is what makes offline brute force of a
+# stolen /data volume infeasible -- don't lower it.
+MIN_SECRET_LEN = 32
+
+
+def is_placeholder(value: str) -> bool:
+    return value.strip().lower().startswith(_PLACEHOLDER_PREFIXES)
+
+
+def require_strong_secret(name: str, value: str | bytes, *, min_len: int = MIN_SECRET_LEN) -> None:
+    """Raise RuntimeError unless `value` is a real, deployment-specific secret.
+
+    Called at startup for every secret whose compromise breaks a trust
+    boundary -- HEADER_HMAC_KEY (downstream verdict trust) and SECRETS_KEY
+    (which also derives the admin session/CSRF/WebAuthn signing key, so a
+    placeholder here is a full admin authentication bypass).
+    """
+    text = value.decode(errors="replace") if isinstance(value, bytes) else (value or "")
+    text = text.strip()
+    hint = "generate one with 'openssl rand -hex 32' and set it in .env"
+    if not text:
+        raise RuntimeError(f"{name} is unset — {hint}")
+    if is_placeholder(text):
+        raise RuntimeError(f"{name} is still the .env.example placeholder — {hint}")
+    if len(text) < min_len:
+        raise RuntimeError(
+            f"{name} is only {len(text)} characters; at least {min_len} are required — {hint}"
+        )
+
+
 @dataclass(frozen=True)
 class Env:
     data_dir: Path = field(default_factory=lambda: Path(_env("SPAMALLAM_DATA", "/data")))
@@ -33,8 +69,20 @@ class Env:
     setup_token: str = field(default_factory=lambda: _env("SETUP_TOKEN"))
 
     smtp_listen_port: int = field(default_factory=lambda: int(_env("SMTP_LISTEN_PORT", "10026")))
+    # Bind the content-filter listener to the filter network only, so the
+    # scanning containers cannot reach it. "0.0.0.0" keeps the old behavior.
+    smtp_listen_host: str = field(default_factory=lambda: _env("SMTP_LISTEN_HOST", "0.0.0.0"))
     reinject_host: str = field(default_factory=lambda: _env("REINJECT_HOST", "postfix"))
     reinject_port: int = field(default_factory=lambda: int(_env("REINJECT_PORT", "10025")))
+    # Peers allowed to use XFORWARD (postfix's smtpd_authorized_xforward_hosts
+    # equivalent). XFORWARD sets the client IP/HELO that rspamd scores SPF and
+    # the RBLs against, so anyone who can send it can launder a verdict.
+    # Empty = accept from any peer (pre-segmentation behavior).
+    xforward_trusted_peers: frozenset[str] = field(
+        default_factory=lambda: frozenset(
+            p.strip() for p in _env("XFORWARD_TRUSTED_PEERS").split(",") if p.strip()
+        )
+    )
 
     rspamd_url: str = field(default_factory=lambda: _env("RSPAMD_URL", "http://rspamd:11333"))
     # DB 1: kept separate from rspamd's own bayes/fuzzy/greylist state on DB 0,

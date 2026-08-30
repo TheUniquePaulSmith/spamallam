@@ -31,22 +31,12 @@
     <span>Skip the AI call entirely when rspamd already rejects the message (only applies in
       "rspamd first" mode). Pure cost savings: a rejected message is silently dropped either
       way, regardless of what AI would have said, so this never changes the outcome — it just
-      avoids paying for an LLM call on mail that's being discarded regardless. Note: if
-      Failure mode below is set to Tempfail and this is off, a postfix retry will re-run
-      rspamd on every attempt in "rspamd first" mode (in "AI first" mode a tempfail happens
-      before rspamd is ever called).</span></label>
+      avoids paying for an LLM call on mail that's being discarded regardless.</span></label>
 
   <h2>Failure mode</h2>
-  <p class="muted">What happens to a message when the AI provider is unreachable,
-     times out, or errors.</p>
-  <label class="row"><input type="radio" name="failure_mode" value="fail_open"
-      {{ 'checked' if cfg.ai.failure_mode == 'fail_open' }}>
-    <span><strong>Fail open</strong> (default) — deliver with
-      <code>X-SpamAllam-Verdict: ERROR</code>; rspamd's conventional scoring still applies</span></label>
-  <label class="row"><input type="radio" name="failure_mode" value="tempfail"
-      {{ 'checked' if cfg.ai.failure_mode == 'tempfail' }}>
-    <span><strong>Tempfail</strong> — return 451 so postfix queues and retries;
-      guarantees analysis but delays mail during outages</span></label>
+  <p class="muted">What happens when the AI provider is unreachable, times out or errors is now
+     set on the <a href="/settings/failure">Failure policy</a> page, alongside the equivalent
+     choices for rspamd and antivirus — the three are easier to reason about together.</p>
   <h2>Drop threshold</h2>
   <p class="muted">Messages classified PHISHING or MALICIOUS at or above this confidence
      are silently discarded (never bounced). Below it they are delivered tagged.</p>

@@ -176,5 +176,5 @@ async def execute(
     if name == "shared_provider_check":
         return await _shared_provider_check(arguments, summary)
     if name == "unifi_block":
-        return await unifi.unifi_block(arguments, cfg, box)
+        return await unifi.unifi_block(arguments, cfg, box, summary)
     return {"error": f"unknown tool {name!r}"}

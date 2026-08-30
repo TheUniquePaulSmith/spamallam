@@ -27,7 +27,27 @@ if [ -z "$MACVLAN_IFACE" ]; then
   exit 1
 fi
 ip route replace default via "$MACVLAN_GATEWAY" dev "$MACVLAN_IFACE"
+# Assert, don't assume: `set -eu` catches a command that fails, not one that
+# succeeds with the wrong result. postfix now has two non-internal networks
+# (mailwan + delivernet), so a default route on the wrong one is exactly the
+# asymmetric-routing/open-relay condition this whole design exists to prevent.
+ACTUAL_DEFAULT=$(ip -4 route show default | head -n 1)
+case "$ACTUAL_DEFAULT" in
+  *"via $MACVLAN_GATEWAY dev $MACVLAN_IFACE"*) ;;
+  *)
+    log "FATAL: default route is '${ACTUAL_DEFAULT}', expected via ${MACVLAN_GATEWAY} dev ${MACVLAN_IFACE}"
+    exit 1
+    ;;
+esac
 log "default route -> ${MACVLAN_GATEWAY} dev ${MACVLAN_IFACE}"
+
+# The re-injection listener binds this address explicitly, and postfix master
+# would fail with "bind: Cannot assign requested address" -- which `postfix
+# check` does not catch -- if filternet were missing or renumbered.
+if ! ip -4 -o addr show | awk -v ip="$FILTER_POSTFIX_IP" '$4 ~ ("^" ip "/") {found=1} END {exit !found}'; then
+  log "FATAL: no interface holds FILTER_POSTFIX_IP (${FILTER_POSTFIX_IP}); check the filternet network"
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Derived variables
@@ -36,6 +56,15 @@ log "default route -> ${MACVLAN_GATEWAY} dev ${MACVLAN_IFACE}"
 MAIL_DOMAIN="${MAIL_HOSTNAME#*.}"
 # comma list -> space list for relay_domains
 MAIL_DOMAINS_SPACED=$(echo "$MAIL_DOMAINS" | tr ',' ' ')
+
+# Trusted for re-injection: the spamallam container, and nothing else unless the
+# operator deliberately widens it. NOT the delivery network -- see main.cf.tmpl.
+POSTFIX_MYNETWORKS="${FILTER_SPAMALLAM_IP}/32"
+if [ -n "${MYNETWORKS_EXTRA:-}" ]; then
+  POSTFIX_MYNETWORKS="${POSTFIX_MYNETWORKS} ${MYNETWORKS_EXTRA}"
+  log "WARNING: MYNETWORKS_EXTRA widens re-injection trust to: ${MYNETWORKS_EXTRA}"
+fi
+log "mynetworks -> 127.0.0.0/8 [::1]/128 ${POSTFIX_MYNETWORKS}"
 
 # ---------------------------------------------------------------------------
 # Recipient validation modes: domain (default) | list | verify
@@ -94,11 +123,15 @@ pick_certs
 # Optional STARTTLS-enforced listener on :2587
 # ---------------------------------------------------------------------------
 if [ "${ENABLE_STARTTLS_PORT:-true}" = "true" ]; then
-  STARTTLS_LISTENER='# ---- Inbound STARTTLS-enforced :2587 ---------------------------------------
-2587      inet  n       -       n       -       -       smtpd
+  # Double-quoted on purpose: envsubst does not recurse into the values it
+  # substitutes, so ${POSTFIX_MACVLAN_IP}/${FILTER_SPAMALLAM_IP} have to be
+  # expanded by the shell here or they reach master.cf as literal text and
+  # postfix refuses to start. Nothing else in this block contains a '$'.
+  STARTTLS_LISTENER="# ---- Inbound STARTTLS-enforced :2587 ---------------------------------------
+${POSTFIX_MACVLAN_IP}:2587      inet  n       -       n       -       -       smtpd
     -o syslog_name=postfix/starttls
     -o smtpd_tls_security_level=encrypt
-    -o content_filter=spamallam:[spamallam]:10026'
+    -o content_filter=spamallam:[${FILTER_SPAMALLAM_IP}]:10026"
 else
   STARTTLS_LISTENER='# STARTTLS listener disabled (ENABLE_STARTTLS_PORT != true)'
 fi
@@ -106,18 +139,27 @@ fi
 # ---------------------------------------------------------------------------
 # Render config (envsubst with an explicit allowlist so postfix $vars survive)
 # ---------------------------------------------------------------------------
+# DOCKER_SUBNET is deliberately NOT exported here any more: the delivery network
+# must not be substitutable into mynetworks. POSTFIX_MYNETWORKS replaces it.
 export MAIL_HOSTNAME MAIL_DOMAIN MAIL_DOMAINS_SPACED MAILSERVER_HOST \
-       MAILSERVER_PORT DOCKER_SUBNET MESSAGE_SIZE_LIMIT JUNK_COMMAND_LIMIT \
+       MAILSERVER_PORT POSTFIX_MYNETWORKS MESSAGE_SIZE_LIMIT JUNK_COMMAND_LIMIT \
        SMTPD_CLIENT_CONNECTION_COUNT_LIMIT SMTPD_CLIENT_CONNECTION_RATE_LIMIT \
        POSTSCREEN_DNSBL_SITES POSTSCREEN_DNSBL_THRESHOLD \
        TLS_CERT_FILE TLS_KEY_FILE \
+       POSTFIX_MACVLAN_IP FILTER_POSTFIX_IP FILTER_SPAMALLAM_IP \
        RECIPIENT_VALIDATION_EXTRA RELAY_RECIPIENT_MAPS_LINE STARTTLS_LISTENER
 
-MAIN_VARS='${MAIL_HOSTNAME} ${MAIL_DOMAIN} ${MAIL_DOMAINS_SPACED} ${MAILSERVER_HOST} ${MAILSERVER_PORT} ${DOCKER_SUBNET} ${MESSAGE_SIZE_LIMIT} ${JUNK_COMMAND_LIMIT} ${SMTPD_CLIENT_CONNECTION_COUNT_LIMIT} ${SMTPD_CLIENT_CONNECTION_RATE_LIMIT} ${POSTSCREEN_DNSBL_SITES} ${POSTSCREEN_DNSBL_THRESHOLD} ${TLS_CERT_FILE} ${TLS_KEY_FILE} ${RECIPIENT_VALIDATION_EXTRA} ${RELAY_RECIPIENT_MAPS_LINE}'
-MASTER_VARS='${STARTTLS_LISTENER}'
+MAIN_VARS='${MAIL_HOSTNAME} ${MAIL_DOMAIN} ${MAIL_DOMAINS_SPACED} ${MAILSERVER_HOST} ${MAILSERVER_PORT} ${POSTFIX_MYNETWORKS} ${MESSAGE_SIZE_LIMIT} ${JUNK_COMMAND_LIMIT} ${SMTPD_CLIENT_CONNECTION_COUNT_LIMIT} ${SMTPD_CLIENT_CONNECTION_RATE_LIMIT} ${POSTSCREEN_DNSBL_SITES} ${POSTSCREEN_DNSBL_THRESHOLD} ${TLS_CERT_FILE} ${TLS_KEY_FILE} ${RECIPIENT_VALIDATION_EXTRA} ${RELAY_RECIPIENT_MAPS_LINE}'
+MASTER_VARS='${STARTTLS_LISTENER} ${POSTFIX_MACVLAN_IP} ${FILTER_POSTFIX_IP} ${FILTER_SPAMALLAM_IP}'
 
 envsubst "$MAIN_VARS"   < "$TEMPLATES/main.cf.tmpl"   > /etc/postfix/main.cf
 envsubst "$MASTER_VARS" < "$TEMPLATES/master.cf.tmpl" > /etc/postfix/master.cf
+
+# Edge header strip (see header_checks in main.cf.tmpl). Mirrors the trust-
+# granting half of _STRIP_RE in spamallam/app/pipeline/headers.py.
+cat > /etc/postfix/header_checks <<'EOF'
+/^X-SpamAllam-Signature:/  IGNORE
+EOF
 
 # spool dir ownership can drift on a fresh named volume
 /usr/sbin/postfix set-permissions >/dev/null 2>&1 || true

@@ -63,7 +63,9 @@ _VOID_TAGS = {"br", "hr", "img", "col", "wbr"}
 # Per-tag attribute allowlist (plus the globals below). Values are still
 # scheme-checked for url-bearing names.
 _ATTRS: dict[str, set[str]] = {
-    "a": {"href", "name", "target", "title"},
+    # No "target": the preview is a hostile message, and a new top-level context
+    # is exactly what the sandbox is there to prevent.
+    "a": {"href", "name", "title"},
     "img": {"src", "alt", "width", "height", "title"},
     "font": {"color", "face", "size"},
     "td": {"colspan", "rowspan", "align", "valign", "width", "height", "nowrap", "bgcolor"},
@@ -83,7 +85,16 @@ _URL_ATTRS = {"href", "src", "cite", "action", "background", "longdesc"}
 _DROP_ATTRS = {"style", "srcset", "background", "ping", "formaction", "dynsrc",
                "lowsrc", "data", "usemap", "sizes"}
 
-_STYLE_BAD_RE = re.compile(r"url\s*\(|expression\s*\(|@import|javascript:|/\*", re.IGNORECASE)
+# A backslash is a CSS ident escape ("\75 rl(...)" tokenizes as url()), so any
+# declaration containing one is dropped rather than decoded. image-set() and
+# cross-fade() fetch remote content without the literal substring "url(".
+_STYLE_BAD_RE = re.compile(
+    r"url\s*\(|image-set\s*\(|cross-fade\s*\(|expression\s*\(|@import|javascript:|/\*|\\",
+    re.IGNORECASE,
+)
+
+# Characters browsers strip from URLs before parsing the scheme.
+_URL_CTRL_RE = re.compile(r"[\x00-\x20\x7f]")
 
 
 def _clean_style(value: str) -> str:
@@ -129,7 +140,11 @@ class _Sanitizer(HTMLParser):
 
     @staticmethod
     def _clean_url(tag: str, attr: str, value: str) -> str | None:
-        v = value.strip()
+        # HTMLParser resolves character references before we see the value, so
+        # "jav&#9;ascript:" arrives as a literal TAB inside the scheme. Browsers
+        # strip TAB/CR/LF from URLs and would run it; strip them first, and emit
+        # the stripped form so the browser sees exactly what was checked.
+        v = _URL_CTRL_RE.sub("", value).strip()
         if _DANGEROUS_SCHEME_RE.match(v):
             return None
         if tag == "img" and attr == "src":

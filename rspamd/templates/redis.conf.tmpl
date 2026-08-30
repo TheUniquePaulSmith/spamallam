@@ -1,2 +1,4 @@
 # Shared redis backend for bayes statistics, fuzzy hashes, greylisting, etc.
+# Rendered by entrypoint.sh so the password never sits in the repo.
 servers = "redis:6379";
+password = "${REDIS_PASSWORD}";

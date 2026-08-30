@@ -16,6 +16,7 @@ from ..store import rawlog
 from ..store.settings import SETTINGS
 from ..store.tracelog import MessageTrace
 from . import body
+from . import failure
 from . import headers as hdr
 from . import overrides as ovr
 from . import rawcopy
@@ -79,8 +80,31 @@ class Pipeline:
             trace.data["message"] = msg_headers
         verdict = hdr.SpamallamVerdict()
 
-        # 2. Overrides
-        wl_rule = ovr.check_whitelist(cfg["overrides"], envelope_from, from_header, rcpt_tos)
+        # 2. Overrides. A sender-domain whitelist hit is only honored once
+        # rspamd confirms the sender is who it claims to be -- otherwise anyone
+        # who knows one whitelisted domain can forge From: and skip AI, rspamd
+        # and ClamAV in one step. That confirmation needs rspamd symbols, so
+        # this pre-pass runs before the whitelist header (which would make
+        # rspamd short-circuit with set_pre_result) is ever built.
+        wl_rule, wl_source = ovr.match_whitelist(
+            cfg["overrides"], envelope_from, from_header, rcpt_tos
+        )
+        pre_rres = None
+        if wl_rule and wl_source != "recipient" and cfg["overrides"].get(
+            "require_auth_for_whitelist", True
+        ):
+            # cfg matters here: this result can become the final rres (for
+            # whitelisted mail, and in rspamd_first order), so it has to carry
+            # the antivirus-failure detection too.
+            pre_rres = await self._check_rspamd(
+                cleaned, envelope_from, rcpt_tos, client, trace, cfg
+            )
+            if not ovr.whitelist_is_authenticated(wl_rule, wl_source, pre_rres.symbols):
+                trace.event("whitelist_denied", rule=wl_rule, source=wl_source,
+                            reason="sender domain failed SPF/DKIM/DMARC authentication",
+                            rspamd_ok=pre_rres.ok)
+                wl_rule = None
+
         bl_rule = None
         if wl_rule:
             verdict.verdict = "HAM"
@@ -101,15 +125,15 @@ class Pipeline:
         # 3-5. AI analysis + rspamd scoring, order per cfg["ai"]["pipeline_order"]
         # (unrecognized/missing value falls back to "ai_first", today's default).
         if cfg["ai"].get("pipeline_order") == "rspamd_first":
-            verdict, rres, tagged, early = await self._order_rspamd_first(
+            verdict, rres, tagged, ai_failed = await self._order_rspamd_first(
                 cleaned, envelope_from, rcpt_tos, client, trace, cfg, wl_rule, bl_rule, verdict,
+                pre_rres,
             )
         else:
-            verdict, rres, tagged, early = await self._order_ai_first(
+            verdict, rres, tagged, ai_failed = await self._order_ai_first(
                 cleaned, envelope_from, rcpt_tos, client, trace, cfg, wl_rule, bl_rule, verdict,
+                pre_rres,
             )
-        if early is not None:
-            return early, trace
 
         # 6. Combined verdict
         drop_verdicts = {v.upper() for v in cfg["ai"]["drop_verdicts"]}
@@ -129,7 +153,36 @@ class Pipeline:
             trace.finish(DROP, self._verdict_dict(verdict, rres, why, raw_saved, quarantined))
             return Decision(DROP, reason=why), trace
 
-        # 6b. SPAM warning banner / plaintext->HTML / image breaking / classification
+        # 6b. Controls that could not run at all. Deliberately AFTER the drop
+        # block: a positive detection is more informative than a failure, and a
+        # message rspamd already rejected needs no policy decision. Whitelisted
+        # mail is exempt, consistent with ai_drop/rspamd_drop above.
+        failed: set[str] = set()
+        if cfg["ai"]["enabled"] and ai_failed:
+            failed.add("ai")
+        if not rres.ok:
+            # rspamd being down means the antivirus behind it did not run either.
+            failed |= {"rspamd", "antivirus"}
+        elif rres.av_failed:
+            failed.add("antivirus")
+
+        if failed and not wl_rule:
+            policy = failure.strictest(failure.resolve(cfg, c) for c in failed)
+            enabled = {"rspamd", "antivirus"} | ({"ai"} if cfg["ai"]["enabled"] else set())
+            if failed >= enabled:
+                # Nothing inspected this message at all. all_down can only make
+                # the outcome stricter, never weaker -- otherwise an operator who
+                # set "rspamd: defer" would silently get delivery instead the
+                # moment rspamd was the last control standing.
+                policy = failure.strictest([policy, failure.resolve(cfg, "all_down")])
+            early = self._apply_failure_policy(
+                policy, sorted(failed), cleaned, tagged, trace, cfg, verdict, rres,
+                envelope_from, rcpt_tos, client, msg_headers,
+            )
+            if early is not None:
+                return early, trace
+
+        # 6c. SPAM warning banner / plaintext->HTML / image breaking / classification
         # footer -- only for mail that's actually delivered (fails open on any error).
         tagged = body.rewrite(tagged, verdict, rres, cfg, trace)
 
@@ -147,9 +200,14 @@ class Pipeline:
                 result_headers.append(("X-Spam-Flag", "YES"))
         else:
             result_headers.append(("X-SpamAllam-Rspamd", "error"))
+        if failed:
+            # Informational only, and deliberately NOT part of the HMAC canonical
+            # string -- same as X-SpamAllam-Labels. Downstream rules can file on
+            # it; nothing is allowed to trust it.
+            result_headers.append(("X-SpamAllam-Control-Failure", ", ".join(sorted(failed))))
         final = hdr.prepend_headers(tagged, result_headers)
 
-        trace.finish(DELIVER, self._verdict_dict(verdict, rres, ""))
+        trace.finish(DELIVER, self._verdict_dict(verdict, rres, "", failed=sorted(failed)))
         return Decision(DELIVER, message=final), trace
 
     async def _analyze(self, cleaned, envelope_from, rcpt_tos, client, trace) -> hdr.SpamallamVerdict:
@@ -161,16 +219,18 @@ class Pipeline:
     async def _run_ai_with_failure_handling(
         self, cleaned: bytes, envelope_from: str, rcpt_tos: list[str], client: dict[str, Any],
         trace: Any, cfg: dict[str, Any],
-    ) -> tuple[hdr.SpamallamVerdict, Decision | None]:
+    ) -> tuple[hdr.SpamallamVerdict, bool]:
         """Runs AI analysis (or the "disabled" stub) with the configured
-        timeout/concurrency limit and failure-mode handling. Identical
-        behavior regardless of pipeline order, since both orders call this
-        one method. Returns (verdict, None) normally, or
-        (verdict, tempfail-Decision) when the caller should return
-        immediately instead of continuing the pipeline."""
+        timeout/concurrency limit. Identical behavior regardless of pipeline
+        order, since both orders call this one method.
+
+        Returns (verdict, failed). It deliberately does NOT decide what a
+        failure means -- that is one central decision in process() (step 6c),
+        so that "the AI is down" and "rspamd is down too" can be weighed
+        together instead of the first one to fail short-circuiting the rest."""
         if not cfg["ai"]["enabled"]:
             trace.event("ai_skipped", reason="disabled")
-            return hdr.SpamallamVerdict(verdict="SKIPPED", reason="AI analysis disabled"), None
+            return hdr.SpamallamVerdict(verdict="SKIPPED", reason="AI analysis disabled"), False
         try:
             timeout = cfg["ai"].get("timeout_seconds") or ENV.ai_timeout_seconds
             async with self._sem:
@@ -178,18 +238,20 @@ class Pipeline:
                     self._analyze(cleaned, envelope_from, rcpt_tos, client, trace),
                     timeout=timeout,
                 )
-            return verdict, None
-        except Exception as exc:  # noqa: BLE001 — provider/timeout errors -> failure mode
+            return verdict, False
+        except Exception as exc:  # noqa: BLE001 — provider/timeout errors -> failure policy
             trace.event("ai_error", error=f"{type(exc).__name__}: {exc}")
-            if cfg["ai"]["failure_mode"] == "tempfail":
-                trace.finish(TEMPFAIL, {"error": str(exc)})
-                return hdr.SpamallamVerdict(), Decision(TEMPFAIL, reason="AI analysis failed")
-            return hdr.SpamallamVerdict(verdict="ERROR", reason=str(exc)[:300]), None
+            return hdr.SpamallamVerdict(verdict="ERROR", reason=str(exc)[:300]), True
 
     @staticmethod
     async def _check_rspamd(message_bytes: bytes, envelope_from: str, rcpt_tos: list[str],
-                            client: dict[str, Any], trace: Any) -> rspamd_client.RspamdResult:
-        """rspamd scoring, always fail-open: rspamd outage must not lose mail."""
+                            client: dict[str, Any], trace: Any,
+                            cfg: dict[str, Any] | None = None) -> rspamd_client.RspamdResult:
+        """rspamd scoring. Never raises -- an outage becomes ok=False, and what
+        that MEANS for the message is decided by the failure policy (step 6c)."""
+        fail_symbols = frozenset(
+            ((cfg or {}).get("failure_policy") or {}).get("antivirus_fail_symbols") or ()
+        )
         rres = await rspamd_client.check(
             ENV.rspamd_url,
             message_bytes,
@@ -198,11 +260,14 @@ class Pipeline:
             hostname=client.get("name", ""),
             envelope_from=envelope_from,
             rcpt_tos=rcpt_tos,
+            av_fail_symbols=fail_symbols,
         )
         if rres.ok:
             trace.event("rspamd", action=rres.action, score=rres.score,
                         symbols={k: (v.get("score") if isinstance(v, dict) else v)
                                  for k, v in rres.symbols.items()})
+            if rres.av_failed:
+                trace.event("antivirus_error", error=rres.av_error)
         else:
             trace.event("rspamd_error", error=rres.error)
         return rres
@@ -211,32 +276,42 @@ class Pipeline:
         self, cleaned: bytes, envelope_from: str, rcpt_tos: list[str], client: dict[str, Any],
         trace: Any, cfg: dict[str, Any], wl_rule: str | None, bl_rule: str | None,
         verdict: hdr.SpamallamVerdict,
-    ) -> tuple[hdr.SpamallamVerdict, rspamd_client.RspamdResult | None, bytes | None, Decision | None]:
+        pre_rres: rspamd_client.RspamdResult | None = None,
+    ) -> tuple[hdr.SpamallamVerdict, rspamd_client.RspamdResult, bytes, bool]:
         """Today's default: AI analyzes (unless overridden), THEN rspamd scores
         the signed X-SpamAllam-* headers via its SPAMALLAM_* symbols."""
+        ai_failed = False
         if not wl_rule and not bl_rule:
-            verdict, early = await self._run_ai_with_failure_handling(
+            verdict, ai_failed = await self._run_ai_with_failure_handling(
                 cleaned, envelope_from, rcpt_tos, client, trace, cfg,
             )
-            if early is not None:
-                return verdict, None, None, early
 
         tagged = hdr.prepend_headers(cleaned, hdr.build_spamallam_headers(verdict, ENV.header_hmac_key))
-        rres = await self._check_rspamd(tagged, envelope_from, rcpt_tos, client, trace)
-        return verdict, rres, tagged, None
+        if wl_rule and pre_rres is not None:
+            # The whitelist-authentication pre-pass already scored this message,
+            # and re-scoring now would only get set_pre_result("no action") back
+            # from the Lua plugin -- the pre-pass symbols are strictly more useful.
+            return verdict, pre_rres, tagged, ai_failed
+        rres = await self._check_rspamd(tagged, envelope_from, rcpt_tos, client, trace, cfg)
+        return verdict, rres, tagged, ai_failed
 
     async def _order_rspamd_first(
         self, cleaned: bytes, envelope_from: str, rcpt_tos: list[str], client: dict[str, Any],
         trace: Any, cfg: dict[str, Any], wl_rule: str | None, bl_rule: str | None,
         verdict: hdr.SpamallamVerdict,
-    ) -> tuple[hdr.SpamallamVerdict, rspamd_client.RspamdResult | None, bytes | None, Decision | None]:
+        pre_rres: rspamd_client.RspamdResult | None = None,
+    ) -> tuple[hdr.SpamallamVerdict, rspamd_client.RspamdResult, bytes, bool]:
         """rspamd scores the raw message first -- it never sees the
         SPAMALLAM_* symbols for this pass, since the X-SpamAllam-* headers
         don't exist yet at this point. If ai.rspamd_bypass_on_reject is on
         and rspamd already rejects, AI is skipped entirely: the message is
         dropped either way (see rspamd_drop below), so this is a pure cost
         optimization with no effect on the final outcome."""
-        rres = await self._check_rspamd(cleaned, envelope_from, rcpt_tos, client, trace)
+        ai_failed = False
+        # The whitelist-authentication pre-pass scored exactly this message.
+        rres = pre_rres or await self._check_rspamd(
+            cleaned, envelope_from, rcpt_tos, client, trace, cfg
+        )
 
         bypass = (
             not wl_rule and not bl_rule
@@ -251,14 +326,12 @@ class Pipeline:
             )
             trace.event("ai_bypass", reason="rspamd_reject", rspamd_action=rres.action, rspamd_score=rres.score)
         elif not wl_rule and not bl_rule:
-            verdict, early = await self._run_ai_with_failure_handling(
+            verdict, ai_failed = await self._run_ai_with_failure_handling(
                 cleaned, envelope_from, rcpt_tos, client, trace, cfg,
             )
-            if early is not None:
-                return verdict, rres, None, early
 
         tagged = hdr.prepend_headers(cleaned, hdr.build_spamallam_headers(verdict, ENV.header_hmac_key))
-        return verdict, rres, tagged, None
+        return verdict, rres, tagged, ai_failed
 
     @staticmethod
     def _save_raw_copy(tagged: bytes, trace: Any) -> bool:
@@ -316,11 +389,49 @@ class Pipeline:
             trace.event("quarantine_save_error", error=f"{type(exc).__name__}: {exc}")
             return False
 
+    def _apply_failure_policy(
+        self, policy: str, failed: list[str], cleaned: bytes, tagged: bytes, trace: Any,
+        cfg: dict[str, Any], verdict: hdr.SpamallamVerdict, rres: rspamd_client.RspamdResult,
+        envelope_from: str, rcpt_tos: list[str], client: dict[str, Any],
+        msg_headers: dict[str, str],
+    ) -> Decision | None:
+        """Apply the admin's policy for unavailable controls.
+
+        Returns None for deliver_tagged, meaning "carry on with normal
+        delivery"; otherwise the Decision to return immediately."""
+        why = f"security controls unavailable: {', '.join(failed)}"
+        trace.event("control_failure", controls=failed, policy=policy)
+
+        if policy == failure.DEFER:
+            trace.finish(TEMPFAIL, self._verdict_dict(verdict, rres, why, failed=failed))
+            return Decision(TEMPFAIL, reason=why)
+
+        if policy == failure.QUARANTINE:
+            raw_saved = self._save_raw_copy(tagged, trace)
+            quarantined = self._save_quarantine(
+                cleaned, trace, cfg, verdict, rres, why, envelope_from, rcpt_tos,
+                client, msg_headers,
+            )
+            if not quarantined:
+                # Quarantine is off, or this trace has no id/day (the admin Test
+                # page). Dropping anyway would silently destroy a message that
+                # nothing has inspected, so fall back to the safe direction.
+                trace.event("quarantine_unavailable", fallback=failure.DEFER)
+                trace.finish(TEMPFAIL, self._verdict_dict(verdict, rres, why, failed=failed))
+                return Decision(TEMPFAIL, reason=why)
+            trace.finish(DROP, self._verdict_dict(verdict, rres, why, raw_saved, quarantined,
+                                                  failed=failed))
+            return Decision(DROP, reason=why)
+
+        return None  # deliver_tagged
+
     @staticmethod
     def _verdict_dict(verdict: hdr.SpamallamVerdict, rres: rspamd_client.RspamdResult,
                       drop_reason: str, raw_saved: bool = False,
-                      quarantined: bool = False) -> dict[str, Any]:
+                      quarantined: bool = False,
+                      failed: list[str] | None = None) -> dict[str, Any]:
         return {
+            "failed_controls": failed or [],
             "ai_verdict": verdict.verdict,
             "ai_confidence": verdict.confidence,
             "ai_category": verdict.category,

@@ -19,7 +19,7 @@ from pathlib import Path
 import uvicorn
 
 from .admin.app import create_app
-from .config import ENV
+from .config import ENV, require_strong_secret
 from .smtp.server import start_smtp_server
 from .store import users as users_store
 from .store.settings import SETTINGS
@@ -145,9 +145,19 @@ async def retention_loop() -> None:
 def bootstrap() -> None:
     for sub in ("config", "logs", "tls"):
         (ENV.data_dir / sub).mkdir(parents=True, exist_ok=True)
-    if not ENV.header_hmac_key or ENV.header_hmac_key.startswith(b"change-me"):
-        log.critical("HEADER_HMAC_KEY is unset/placeholder — set it in .env")
-        sys.exit(1)
+    # SECRETS_KEY is validated alongside HEADER_HMAC_KEY because admin/security.py
+    # derives the session, CSRF and WebAuthn-challenge signing key from it. A
+    # placeholder there is not "weak secrets at rest", it is an admin auth bypass
+    # by anyone who can read .env.example in the public repo.
+    for name, value in (
+        ("HEADER_HMAC_KEY", ENV.header_hmac_key),
+        ("SECRETS_KEY", ENV.secrets_key),
+    ):
+        try:
+            require_strong_secret(name, value)
+        except RuntimeError as exc:
+            log.critical("%s", exc)
+            sys.exit(1)
 
     token = users_store.bootstrap_setup_token()
     if token:

@@ -13,11 +13,52 @@ container may eventually be compromised. Goals, in order:
    sibling containers.
 5. Keep the AI from being weaponized (link activation, over-blocking).
 
+### What each compromise must not allow
+
+"Compromised" here means arbitrary code execution with that container's
+identity and network access — not merely that the application has a bug.
+
+| Compromised | Must NOT be able to | Enforced by |
+|---|---|---|
+| postfix | Reach the scanning containers or their state | Network segmentation: postfix is not on `scannet` |
+| spamallam | — | *It is the trusted signer. See the honest limits below.* |
+| rspamd | Inject mail downstream; alter another container's verdict | Not on `filternet`; `mynetworks` is spamallam's /32 |
+| redis | Inject mail downstream | Not on `filternet`; `requirepass` |
+| clamav | Inject mail downstream; bypass its own scanning | Not on `filternet`; antivirus-failure detection |
+| acme | Reach any other container | Alone on `acmenet` |
+| admin UI | Be reached without a passkey | WebAuthn; `SECRETS_KEY` validated at boot |
+| Docker host | — | **Out of scope. Game over.** |
+
+Three limits stated plainly, because the table above would otherwise imply more
+than the code delivers:
+
+- **The HMAC protects against forgery by senders, not against compromise of the
+  signer.** A compromised `spamallam` holds `HEADER_HMAC_KEY` and can mint any
+  verdict it likes. The signature proves "this came from the signer", never
+  "this verdict is correct".
+- **A compromised `spamallam` can still re-inject freely.** It is the one
+  address in `mynetworks`, by design. Segmentation shrinks the set of
+  containers that can do this from "all of them" to "the one that is supposed
+  to"; it does not authenticate the channel. mTLS on the re-injection hop is the
+  next tier and is not implemented.
+- **Reaching `MAILSERVER_HOST` directly is a network problem, not a Docker
+  one.** Containers with egress can route to the Docker host, which owns the
+  bridge gateway. Closing that needs a host firewall rule — see
+  [FIREWALL.md](FIREWALL.md), §6.1.
+
 ## Inbound SMTP surface (postfix)
 
 - Relay policy: `permit_mynetworks, reject_unauth_destination` with
-  `mynetworks` = loopback + the stack's fixed docker subnet only. Mail is
-  accepted solely *for* `MAIL_DOMAINS`.
+  `mynetworks` = loopback + **the spamallam container's single /32** on the
+  filter network. Mail is accepted solely *for* `MAIL_DOMAINS`.
+- **Network membership is not authentication.** `mynetworks` used to be the
+  whole docker subnet, which meant every container in the stack — rspamd,
+  redis, clamav, acme — was implicitly trusted to deliver arbitrary mail to the
+  internal server with no filtering at all. The stack is now segmented so that
+  postfix and spamallam share exactly one network (`filternet`, `internal:
+  true`) that nothing else is on, the re-injection listener is bound to that
+  interface alone, and `mynetworks` names one host rather than a subnet. See
+  [FIREWALL.md](FIREWALL.md) for the full traffic model.
 - **Direct-LAN exposure, not port-publish NAT**: postfix is dual-homed onto a
   macvlan network (`mailwan`) and reached at its own `POSTFIX_MACVLAN_IP`,
   instead of via Docker's normal `ports:` publish path. This isn't cosmetic —
@@ -104,7 +145,7 @@ container keeps pointing at `127.0.0.11` either way, so container-name
 resolution (the `spamallam` name postfix's `content_filter` targets, per
 `postfix/templates/master.cf.tmpl`) is unaffected regardless of what
 `POSTFIX_DNS_SERVER` is set to. Confirmed by comparing `docker run --network
-spamallam_mailnet ... cat /etc/resolv.conf` with and without `--dns` on a
+spamallam_scannet ... cat /etc/resolv.conf` with and without `--dns` on a
 throwaway container: identical output (`nameserver 127.0.0.11`) both times.
 It's used *only* for DNSBL lookups — nothing else in the stack depends on it.
 
@@ -199,24 +240,39 @@ to render incorrectly.
 ## AI-specific safeguards
 
 - **No link activation**: neither web tool will ever fetch a URL that appears
-  in the analyzed message (exact URL *and* same-host matches are refused) —
-  only URLs from search results or known brand domains.
-- **No SSRF against internal services**: `web_fetch` resolves its target
-  before fetching and refuses private/loopback/link-local/multicast/reserved
-  addresses (same class of check `ip_lookup`/`ip_ownership` already apply),
-  so a prompt-injection payload cannot induce the model into fetching an
-  internal service (rspamd, redis, cloud metadata endpoints, etc.).
-- **Over-blocking**: unifi_block refuses shared-mail-provider IPs and private
-  ranges, caps CIDR rollup at /24, defaults to suggest-only, and audit-logs
-  every attempt.
+  in the analyzed message — the exact URL, and any host on the *same site*, are
+  refused (a tracker on `t.evil.com` also protects `www.evil.com`); only URLs
+  from search results or known brand domains are eligible.
+- **SSRF**: `web_fetch` resolves its target and refuses
+  private/loopback/link-local/multicast/reserved addresses, and re-runs that
+  check **on every redirect hop** — redirects are followed manually rather than
+  by the HTTP client, because a pre-flight check on the first URL proves nothing
+  when a public host can 302 to `169.254.169.254` or an internal service. The
+  headless-browser backends re-check every request the page makes.
+  *Residual risk:* the target is resolved once for the check and again by the
+  connection, so a 0-TTL DNS rebind can still win that race. Closing it needs
+  connect-time IP pinning. This is part of why `web_fetch` ships disabled.
+- **Over-blocking**: `unifi_block` refuses shared-mail-provider IPs, private and
+  reserved ranges, **and any address that is not the one that actually delivered
+  the message being analyzed** — so an injected instruction cannot aim a
+  firewall block at a third party. It caps CIDR rollup at /24, defaults to
+  suggest-only, and audit-logs every attempt including refusals.
 - **Prompt injection**: the message body is data inside a clearly delimited
   JSON block; tools return structured JSON; the model cannot cause actions
   beyond the enabled tools, and the block tool's guardrails are enforced in
   code, not in the prompt.
-- **Availability**: analyses are concurrency-bounded with a hard per-message
-  timeout; provider outages follow the configured failure mode (fail-open by
-  default) and rspamd outages always fail open — an attacker cannot turn the
-  filter into a mail-loss denial of service.
+  *Stated honestly:* this bounds what the model can do, not what it can be
+  persuaded to decide. A well-formed, permitted tool call chosen for the
+  attacker's reasons still executes. The defence is that every consequential
+  tool is constrained in code to targets derived from the message itself — the
+  model chooses *whether*, never *what*.
+- **Availability, and the fail-open question**: analyses are concurrency-bounded
+  with a hard per-message timeout. What happens when a control is *unavailable*
+  is an explicit per-control admin setting — deliver-tagged, quarantine, or
+  defer — because an attacker who cannot beat a filter may instead try to
+  exhaust it, and "always deliver on failure" would make that the easy bypass.
+  Defaults preserve the previous deliver-on-failure behaviour; see
+  [FAILURE-POLICY.md](FAILURE-POLICY.md) for the trade-offs of each choice.
 
 ## Container hardening summary
 
@@ -225,14 +281,26 @@ to render incorrectly.
 | postfix | root→postfix (priv-sep) | CHOWN, DAC_OVERRIDE, FOWNER, KILL, SETGID, SETUID, NET_ADMIN | rw (spool) |
 | spamallam | uid 1000 | none | read-only + /data + tmpfs |
 | rspamd | root→_rspamd | CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID | rw |
-| redis / clamav | image defaults | none added | rw (data volumes) |
+| redis / clamav | root→service user | CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID | rw (data volumes) |
 | acme | root | CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID | rw |
 
-All services: `no-new-privileges: true`, on the internal `mailnet` bridge; only
-postfix is additionally dual-homed onto the direct-LAN `mailwan` macvlan
-network (see above) — every other service's ports, if published at all, stay
-loopback/LAN-only. The certs volume is writable by acme alone. No container
-mounts docker.sock.
+All services: `cap_drop: ALL` plus the grants above, and
+`no-new-privileges: true`. Network membership:
+
+| Network | Members | Notes |
+|---|---|---|
+| `mailwan` (macvlan) | postfix | direct-LAN, real client source IPs |
+| `filternet` (internal) | postfix, spamallam | the only network in `mynetworks` |
+| `delivernet` | postfix | route to `MAILSERVER_HOST`; **not** trusted |
+| `scannet` | spamallam, rspamd, redis, clamav | scanning + egress |
+| `acmenet` | acme | alone; holds DNS-provider credentials |
+
+`filternet` is a /29 on purpose — six usable addresses, so a stray container
+cannot quietly join the one network postfix trusts. Each container that
+publishes a port has exactly one non-internal network, keeping Docker's choice
+of default route and DNAT endpoint deterministic. Published ports stay
+loopback-only by default. The certs volume is writable by acme alone. Redis
+requires a password. No container mounts docker.sock.
 
 ## Residual risks / operator notes
 
@@ -255,7 +323,7 @@ mounts docker.sock.
   that owns the parent interface, full stop, regardless of subnet/routing
   config. Mail is accepted, scanned, and reinjected normally right up until
   this last hop, then queues forever as `Host is unreachable` — nothing about
-  it fails loudly earlier. Use the `mailnet` docker bridge gateway IP instead;
+  it fails loudly earlier. Use the `delivernet` docker bridge gateway IP instead;
   see the `MAILSERVER_HOST` guidance in [SYNOLOGY.md](SYNOLOGY.md).
 - **MailPlus hostname collision**: postfix's built-in relay-loop guard bounces
   (`mail for <host> loops back to myself`) if `MAILSERVER_HOST`'s own
