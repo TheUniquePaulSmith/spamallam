@@ -7,6 +7,7 @@ model what is normal for your organization — so expected bulk mail isn't flagg
 irrelevant offers (timeshares, power-washing…) are confidently rejected, and polished
 mail that doesn't fit your workflows stands out as spear-phishing.</p>
 
+{% if is_admin %}
 <form method="post" action="/settings/context" class="card">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <label>Tell me about your organization / business
@@ -15,29 +16,43 @@ mail that doesn't fit your workflows stands out as spear-phishing.</p>
   <label>Tell me about the type of mail you expect to receive
     <textarea name="expected_mail" rows="5"
       placeholder="e.g. GitHub/Synology/UniFi notifications, invoices from Hetzner, tech newsletters (LWN, TLDR), family mail from gmail.com.">{{ cfg.context.expected_mail }}</textarea></label>
-  {% if is_admin %}<button class="primary">Save</button>{% endif %}
+  <button class="primary">Save</button>
 </form>
+{% endif %}
 
 <div class="card">
   <h2>Per-recipient context <span class="muted">(optional)</span></h2>
+  {% if not is_admin %}
+  <p class="muted small">Context you add here applies only to mail sent to your own address(es).</p>
+  {% endif %}
   {% for email, text in cfg.context.per_recipient.items() %}
   <form method="post" action="/settings/context/recipient" class="inline-form">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <input type="hidden" name="email" value="{{ email }}">
     <strong>{{ email }}</strong>
     <textarea name="text" rows="2">{{ text }}</textarea>
-    {% if is_admin %}
-      <button>Update</button>
-      <button name="delete" value="on" class="danger">Delete</button>
-    {% endif %}
+    <button>Update</button>
+    <button name="delete" value="on" class="danger" data-confirm="Delete context for {{ email }}?">Delete</button>
   </form>
   {% else %}<p class="muted">No per-recipient entries yet.</p>{% endfor %}
+
   {% if is_admin %}
   <form method="post" action="/settings/context/recipient" class="inline-form">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <input name="email" type="email" placeholder="user@example.com" required>
     <textarea name="text" rows="2"
       placeholder="e.g. subscribed to opensea.io and coindesk newsletters — crypto mail TO THIS ADDRESS may be legitimate"></textarea>
+    <button class="primary">Add recipient context</button>
+  </form>
+  {% elif owned_addresses %}
+  <form method="post" action="/settings/context/recipient" class="inline-form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Address
+      <select name="email" required>
+        {% for a in owned_addresses %}<option value="{{ a }}">{{ a }}</option>{% endfor %}
+      </select></label>
+    <textarea name="text" rows="2"
+      placeholder="e.g. I subscribe to opensea.io and coindesk newsletters — crypto mail to this address may be legitimate"></textarea>
     <button class="primary">Add recipient context</button>
   </form>
   {% endif %}

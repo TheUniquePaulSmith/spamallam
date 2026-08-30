@@ -16,6 +16,15 @@
 <div class="card">
   <h2>{{ uname }} {% if u.is_admin %}<span class="badge">admin</span>{% endif %}
       <span class="muted small">{{ u.display }} · created {{ fmt_dt(u.created) }}</span></h2>
+  {% if is_admin and not u.is_admin %}
+  <form method="post" action="/users/addresses" class="inline-form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="target" value="{{ uname }}">
+    <label>Owned e-mail addresses <span class="muted small">(one per line — primary + aliases; what this user may see in quarantine)</span>
+      <textarea name="addresses" rows="3" placeholder="paul@example.com&#10;paul.smith@example.com">{{ u.addresses|join('\n') }}</textarea></label>
+    <button>Save addresses</button>
+  </form>
+  {% endif %}
   <table>
     <tr><th>passkey</th><th>added</th><th>id</th><th></th></tr>
     {% for c in u.credentials %}
@@ -69,6 +78,8 @@
     <label>Username <input name="new_username" required pattern="[a-zA-Z0-9._-]+"></label>
     <label class="row"><input type="checkbox" name="is_admin"><span>Grant admin</span></label>
   </div>
+  <label>Owned e-mail addresses <span class="muted small">(one per line; leave blank for admins — non-admins see only quarantined mail to these addresses)</span>
+    <textarea name="addresses" rows="3" placeholder="paul@example.com&#10;paul.smith@example.com"></textarea></label>
   <button class="primary">Create enrollment link</button>
 </form>
 {% endif %}

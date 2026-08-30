@@ -460,6 +460,30 @@ if (tracesList) {
   });
 }
 
+/* ---- generic "are you sure?" guard for buttons with data-confirm ---- */
+document.addEventListener("submit", (ev) => {
+  const form = ev.target;
+  if (!(form instanceof HTMLFormElement)) return;
+  const btn = form.querySelector("button[data-confirm]");
+  if (btn && !window.confirm(btn.dataset.confirm)) {
+    ev.preventDefault();
+  }
+}, true);
+
+/* ---- quarantine: lazy-load the sandboxed message preview on first click ---- */
+const quarantineList = document.getElementById("quarantine-list");
+if (quarantineList) {
+  quarantineList.addEventListener("click", (ev) => {
+    const btn = ev.target.closest(".qtn-preview-toggle");
+    if (!btn) return;
+    const frame = btn.closest(".trace-detail").querySelector("iframe.qtn-preview");
+    if (!frame) return;
+    if (!frame.getAttribute("src")) frame.setAttribute("src", btn.dataset.src);
+    frame.hidden = !frame.hidden;
+    btn.textContent = frame.hidden ? "Preview message" : "Hide preview";
+  });
+}
+
 /* ---- dashboard: poll for newly processed mail and refresh the recent-messages
    table without a full page reload ---- */
 const recentBody = document.getElementById("recent-messages-body");

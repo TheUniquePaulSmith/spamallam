@@ -30,8 +30,10 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import re
 import secrets
 import time
+from email.utils import parseaddr
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +41,39 @@ from ..config import ENV
 from .files import read_yaml, write_yaml
 
 TOKEN_TTL_SECONDS = 24 * 3600
+
+
+def normalize_address(address: str) -> str:
+    """Canonical form for matching a message recipient to a user's owned
+    addresses: lowercased, whitespace/display-name stripped, and plus-addressing
+    folded (paul+news@example.com -> paul@example.com). Mirrors
+    pipeline/overrides.py::_base_recipient so quarantine visibility lines up with
+    whitelist-recipient matching."""
+    addr = parseaddr(address or "")[1].lower().strip()
+    if "@" not in addr:
+        return ""
+    return re.sub(r"\+[^@]*@", "@", addr)
+
+
+def normalize_addresses(addresses: list[str] | None) -> list[str]:
+    seen: list[str] = []
+    for a in addresses or []:
+        n = normalize_address(a)
+        if n and "@" in n and n not in seen:
+            seen.append(n)
+    return seen
+
+
+def user_can_see_address(user: dict[str, Any] | None, rcpt_tos: list[str]) -> bool:
+    """True when any envelope recipient normalizes to one of the user's owned
+    addresses. Admins bypass this check at the call site."""
+    if not user:
+        return False
+    owned = {a for a in (normalize_address(x) for x in user.get("addresses", []) or []) if a}
+    if not owned:
+        return False
+    got = {a for a in (normalize_address(r) for r in rcpt_tos or []) if a}
+    return bool(owned & got)
 
 
 def _users_path() -> Path:
@@ -89,16 +124,29 @@ def delete_user(username: str) -> bool:
     return False
 
 
-def create_user(username: str, display: str, is_admin: bool) -> dict[str, Any]:
+def create_user(username: str, display: str, is_admin: bool,
+                addresses: list[str] | None = None) -> dict[str, Any]:
     user = {
         "display": display or username,
         "is_admin": bool(is_admin),
         "created": _now(),
         "timezone": "UTC",
         "credentials": [],
+        # E-mail addresses (primary + aliases) this user owns. An admin assigns
+        # these; a non-admin sees only quarantined mail addressed to one of them.
+        "addresses": normalize_addresses(addresses),
     }
     save_user(username, user)
     return user
+
+
+def set_addresses(username: str, addresses: list[str]) -> bool:
+    user = get_user(username)
+    if user is None:
+        return False
+    user["addresses"] = normalize_addresses(addresses)
+    save_user(username, user)
+    return True
 
 
 def get_timezone(username: str) -> str:
@@ -164,13 +212,15 @@ def update_sign_count(username: str, cred_id_b64: str, sign_count: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-def create_token(username: str | None, is_admin: bool) -> str:
+def create_token(username: str | None, is_admin: bool,
+                 addresses: list[str] | None = None) -> str:
     token = secrets.token_urlsafe(24)
     data = read_yaml(_tokens_path(), {}) or {}
     data.setdefault("tokens", []).append({
         "hash": _token_hash(token),
         "username": username,
         "is_admin": bool(is_admin),
+        "addresses": normalize_addresses(addresses),
         "created": _now(),
         "expires": int(time.time()) + TOKEN_TTL_SECONDS,
     })

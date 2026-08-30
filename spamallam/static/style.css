@@ -87,3 +87,10 @@ label.row.compact { margin: 0; white-space: nowrap; }
   border-radius: 50%; animation: sa-spin .6s linear infinite; }
 @keyframes sa-spin { to { transform: rotate(360deg); } }
 button.busy { cursor: progress; opacity: .85; }
+
+/* ---- quarantine ---- */
+.qtn-preview { width: 100%; height: 60vh; margin: .6rem 0; background: #fff;
+  border: 1px solid var(--line); border-radius: 8px; }
+.qtn-actions { display: flex; gap: 1.2rem; flex-wrap: wrap; align-items: flex-start;
+  margin-top: .6rem; padding-top: .6rem; border-top: 1px solid var(--line); }
+.qtn-actions .inline-form { margin: 0; }

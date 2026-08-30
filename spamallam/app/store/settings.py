@@ -179,6 +179,15 @@ DEFAULTS: dict[str, Any] = {
         "retention_days": 30,
         "log_prompts": True,     # include full prompt/response text in traces
     },
+    "quarantine": {
+        # When False, a DROP is not quarantined -- only the existing
+        # attachment-stripped review copy (rawlog) is kept, as before.
+        "enabled": True,
+        # Days a dropped message stays in quarantine before it is permanently
+        # and automatically deleted. Independent of logging.retention_days so
+        # quarantined mail can be kept longer than the technical trace log.
+        "retention_days": 90,
+    },
 }
 
 
