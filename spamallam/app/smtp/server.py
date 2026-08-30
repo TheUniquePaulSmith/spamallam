@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import smtplib
 from typing import Any
 
 from aiosmtpd.smtp import SMTP, Session, syntax
 
 from ..config import ENV
+from ..deliver import reinject
 from ..pipeline.analyzer import DELIVER, DROP, PIPELINE
 
 log = logging.getLogger("spamallam.smtp")
@@ -100,7 +100,7 @@ class SpamallamHandler:
 
         try:
             await asyncio.get_running_loop().run_in_executor(
-                None, self._reinject, mail_from, rcpt_tos, decision.message
+                None, reinject, mail_from, rcpt_tos, decision.message
             )
         except Exception as exc:  # noqa: BLE001
             log.error("re-injection failed (%s); tempfailing", exc)
@@ -108,11 +108,6 @@ class SpamallamHandler:
 
         log.info("DELIVER %s from=%s rcpt=%s", trace.id, mail_from, rcpt_tos)
         return "250 2.0.0 Ok: queued"
-
-    @staticmethod
-    def _reinject(mail_from: str, rcpt_tos: list[str], message: bytes) -> None:
-        with smtplib.SMTP(ENV.reinject_host, ENV.reinject_port, timeout=60) as smtp:
-            smtp.sendmail(mail_from, rcpt_tos, message)
 
 
 async def start_smtp_server() -> asyncio.AbstractServer:

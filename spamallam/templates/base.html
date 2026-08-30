@@ -11,6 +11,7 @@
   <div class="brand">🦙 SpamAllam</div>
   {% if username %}
   <nav>
+    {% if is_admin %}
     <a href="/">Dashboard</a>
     <a href="/settings/ai">AI</a>
     <a href="/settings/provider">Provider</a>
@@ -20,9 +21,15 @@
     <a href="/settings/marking">Marking</a>
     <a href="/settings/classification">Classification</a>
     <a href="/test">Test</a>
+    <a href="/quarantine">Quarantine</a>
     <a href="/logs">Logs</a>
     <a href="/logs/audit">Audit</a>
     <a href="/users">Users</a>
+    {% else %}
+    <a href="/quarantine">Quarantine</a>
+    <a href="/settings/context">Context</a>
+    <a href="/users">My passkeys</a>
+    {% endif %}
   </nav>
   <div class="who">{{ username }}{% if is_admin %} <span class="badge">admin</span>{% endif %}
     · <a href="/logout">sign out</a></div>

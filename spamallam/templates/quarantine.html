@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Quarantine{% endblock %}
+{% block content %}
+<h1>Quarantine</h1>
+<p class="muted">Messages SpamAllam dropped as spam / phishing / malicious. Preview one
+  safely (remote images and tracking pixels are stripped), permanently delete it, or
+  <strong>release</strong> it — which delivers it to the original recipient(s) with no
+  re-analysis.</p>
+
+<form method="get" action="/quarantine" class="inline-form">
+  <input name="day" value="{{ day }}" placeholder="YYYY-MM-DD">
+  <input name="q" value="{{ q }}" placeholder="search (subject, from, recipient…)">
+  <button>Filter</button>
+  {% if is_admin %}
+    {% if show_all %}
+      <a class="small" href="/quarantine">hide released/deleted</a>
+    {% else %}
+      <a class="small" href="/quarantine?show=all">show released/deleted</a>
+    {% endif %}
+  {% endif %}
+</form>
+
+<div id="quarantine-list">
+{% for e in entries %}
+<details class="card trace" data-id="{{ e.id }}">
+  <summary class="trace-row">
+    <span class="mono muted trace-col-time">{{ e.ts }}</span>
+    <span class="trace-col-subject" title="{{ e.subject }}">{{ e.subject or '(no subject)' }}</span>
+    <span class="mono trace-col-from" title="{{ e.from_header or e.envelope_from }}">{{ e.from_header or e.envelope_from or '<>' }}</span>
+    <span class="mono muted trace-col-mx" title="{{ e.rcpt_tos|join(', ') }}">{{ e.rcpt_tos|join(', ') or '-' }}</span>
+    <span class="small trace-col-verdict">{{ e.ai_verdict }} {{ '%.0f'|format((e.ai_confidence or 0) * 100) }}%</span>
+    <span class="badge trace-col-action {{ 'ok' if e.status == 'released' else ('muted' if e.status == 'deleted' else 'error') }}">{{ e.status|upper }}</span>
+  </summary>
+  <div class="trace-detail">
+    <div class="cols small">
+      <div>
+        <p><strong>From:</strong> {{ e.from_header or '-' }}</p>
+        <p><strong>Envelope from:</strong> {{ e.envelope_from or '<>' }}</p>
+        <p><strong>Rcpt to:</strong> {{ e.rcpt_tos|join(', ') }}</p>
+        <p><strong>Connecting host:</strong> <span class="mono">{{ e.client.name or '-' }} [{{ e.client.addr }}]</span></p>
+        <p><strong>Message-ID:</strong> <span class="mono">{{ e.message_id or '-' }}</span></p>
+        <p><strong>Size:</strong> {{ e.size }} bytes</p>
+      </div>
+      <div>
+        <p><strong>AI verdict:</strong> {{ e.ai_verdict }} ({{ '%.0f'|format((e.ai_confidence or 0) * 100) }}%)</p>
+        <p><strong>Category:</strong> {{ e.ai_category or '-' }}</p>
+        <p><strong>Reason:</strong> {{ e.ai_reason or '-' }}</p>
+        <p><strong>rspamd:</strong> {{ e.rspamd_action }} ({{ '%.1f'|format(e.rspamd_score or 0) }})</p>
+        <p><strong>Drop reason:</strong> {{ e.drop_reason }}</p>
+        {% if e.status != 'quarantined' %}
+        <p><strong>{{ e.status|capitalize }} by:</strong> {{ e.acted_by }} at {{ e.acted_ts }}</p>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if e.status == 'quarantined' %}
+    <p>
+      <button type="button" class="small qtn-preview-toggle"
+              data-src="/quarantine/{{ e.day }}/{{ e.id }}/preview">Preview message</button>
+    </p>
+    <iframe class="qtn-preview" title="message preview" sandbox referrerpolicy="no-referrer"
+            loading="lazy" hidden></iframe>
+
+    <div class="qtn-actions">
+      <form method="post" action="/quarantine/release" class="inline-form">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="hidden" name="entry_id" value="{{ e.id }}">
+        <input type="hidden" name="day" value="{{ e.day }}">
+        <label class="row"><input type="checkbox" name="whitelist_sender">
+          <span>also whitelist this sender's domain</span></label>
+        <button class="primary" data-confirm="Release this message for delivery to {{ e.rcpt_tos|join(', ') }}?">Release</button>
+      </form>
+      <form method="post" action="/quarantine/delete" class="inline-form">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="hidden" name="entry_id" value="{{ e.id }}">
+        <input type="hidden" name="day" value="{{ e.day }}">
+        <button class="danger" data-confirm="Permanently delete this message? This cannot be undone.">Permanently delete</button>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+</details>
+{% else %}
+<p class="muted">{% if is_admin %}Nothing in quarantine.{% else %}No quarantined messages addressed to you.{% endif %}</p>
+{% endfor %}
+</div>
+
+{% if is_admin %}
+<form method="post" action="/settings/quarantine" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <h2>Quarantine settings</h2>
+  <label class="row"><input type="checkbox" name="enabled" {% if quarantine_cfg.enabled %}checked{% endif %}>
+    <span>Quarantine dropped messages (off = only the attachment-stripped log copy is kept)</span></label>
+  <label>Retention (days) before permanent auto-deletion
+    <input type="number" name="retention_days" min="1" max="3650" value="{{ quarantine_cfg.retention_days }}"></label>
+  <button class="primary">Save</button>
+</form>
+{% endif %}
+{% endblock %}

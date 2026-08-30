@@ -1,6 +1,7 @@
 """SpamAllam admin web UI (FastAPI + Jinja2, HTTPS-only, passkey-only auth)."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -15,7 +16,10 @@ from fastapi.templating import Jinja2Templates
 
 from ..ai.engine import run_provider_test
 from ..config import ENV
-from ..store import audit, rawlog, tracelog
+from ..deliver import reinject
+from ..pipeline import headers as hdr
+from ..pipeline import sanitize
+from ..store import audit, quarantine, rawlog, tracelog
 from ..store import users as users_store
 from ..store.secrets import SecretsBox, redact
 from ..store.settings import SETTINGS
@@ -30,6 +34,26 @@ templates = Jinja2Templates(directory=str(ENV.templates_dir))
 
 def _box() -> SecretsBox:
     return SecretsBox(ENV.secrets_key)
+
+
+def _is_admin(username: str) -> bool:
+    user = users_store.get_user(username)
+    return bool(user and user.get("is_admin"))
+
+
+def _owned_addresses(username: str) -> list[str]:
+    user = users_store.get_user(username) or {}
+    return list(user.get("addresses", []) or [])
+
+
+def _can_see_entry(username: str, entry: dict[str, Any]) -> bool:
+    """Admins see every quarantined message; a non-admin sees only those
+    addressed to one of their assigned e-mail addresses."""
+    if _is_admin(username):
+        return True
+    return users_store.user_can_see_address(
+        users_store.get_user(username), entry.get("rcpt_tos", [])
+    )
 
 
 def _flash_url(url: str, flash: str, msg: str = "") -> str:
@@ -54,8 +78,12 @@ _HTML_ERROR_REDIRECT = {
     "/settings/classification": "/settings/classification",
     "/settings/classification/label": "/settings/classification",
     "/settings/logging": "/logs",
+    "/settings/quarantine": "/quarantine",
+    "/quarantine/release": "/quarantine",
+    "/quarantine/delete": "/quarantine",
     "/users/invite": "/users",
     "/users/delete": "/users",
+    "/users/addresses": "/users",
     "/users/passkey/delete": "/users",
 }
 
@@ -92,10 +120,14 @@ def create_app() -> FastAPI:
         response = await call_next(request)
         response.headers["Strict-Transport-Security"] = "max-age=31536000"
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'"
+        # setdefault: a route may serve its own hardened CSP / frame policy (the
+        # quarantine preview does — a locked-down sandboxed document rendered in
+        # a same-origin iframe).
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'",
         )
         return response
 
@@ -177,7 +209,8 @@ def create_app() -> FastAPI:
         username = (record.get("username") or body.get("username") or "").strip().lower()
         if users_store.get_user(username) is None:
             users_store.create_user(username, body.get("display", username),
-                                    is_admin=bool(record.get("is_admin")))
+                                    is_admin=bool(record.get("is_admin")),
+                                    addresses=record.get("addresses"))
         webauthn_flow.verify_registration(request, username, body,
                                           body.get("label", "first passkey"))
         audit.record(username, "auth.enrolled", {"is_admin": bool(record.get("is_admin"))})
@@ -189,6 +222,9 @@ def create_app() -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request):
         username = security.require_user(request)
+        # Non-admins have no dashboard — their whole surface is quarantine.
+        if not _is_admin(username):
+            return RedirectResponse("/quarantine", status_code=303)
         cfg = SETTINGS.all()
         traces = tracelog.read_recent_summary(limit=10)
         return render(request, "dashboard.html", username,
@@ -197,7 +233,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/traces/recent")
     async def api_traces_recent(request: Request):
-        security.require_user(request)
+        security.require_admin(request)
         return {"traces": tracelog.read_recent_summary(limit=10)}
 
     # ------------------------------------------------------------ settings: AI
@@ -205,7 +241,7 @@ def create_app() -> FastAPI:
     async def ai_page(request: Request):
         from ..ai.prompt import system_prompt
 
-        username = security.require_user(request)
+        username = security.require_admin(request)
         cfg = SETTINGS.all()
         return render(request, "ai.html", username, cfg=cfg,
                       effective_prompt=system_prompt(cfg["ai"]),
@@ -254,7 +290,7 @@ def create_app() -> FastAPI:
     # ------------------------------------------------------ settings: provider
     @app.get("/settings/provider", response_class=HTMLResponse)
     async def provider_page(request: Request):
-        username = security.require_user(request)
+        username = security.require_admin(request)
         cfg = SETTINGS.all()
         return render(request, "provider.html", username, cfg=cfg,
                       provider=redact(cfg["provider"]))
@@ -307,7 +343,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/provider/test")
     async def provider_test(request: Request):
-        username = security.require_user(request)
+        username = security.require_admin(request)
         audit.record(username, "provider.test", {})
         return await run_provider_test()
 
@@ -318,7 +354,7 @@ def create_app() -> FastAPI:
         from ..providers.factory import build_mtls_context
         from ..providers.openai_provider import OpenAIProvider
 
-        username = security.require_user(request)
+        username = security.require_admin(request)
         body = await request.json()
         ptype = str(body.get("ptype", "")).lower()
         base_url = str(body.get("base_url", "")).strip()
@@ -360,7 +396,18 @@ def create_app() -> FastAPI:
     @app.get("/settings/context", response_class=HTMLResponse)
     async def context_page(request: Request):
         username = security.require_user(request)
-        return render(request, "context.html", username, cfg=SETTINGS.all())
+        cfg = SETTINGS.all()
+        owned = _owned_addresses(username)
+        if not _is_admin(username):
+            # Non-admins only see/manage per-recipient context for their own
+            # addresses; the org-wide context form is hidden in the template.
+            per = cfg["context"].get("per_recipient", {}) or {}
+            owned_set = {users_store.normalize_address(a) for a in owned}
+            cfg["context"]["per_recipient"] = {
+                e: t for e, t in per.items()
+                if users_store.normalize_address(e) in owned_set
+            }
+        return render(request, "context.html", username, cfg=cfg, owned_addresses=owned)
 
     @app.post("/settings/context")
     async def context_save(request: Request, csrf: str = Form(...),
@@ -378,9 +425,13 @@ def create_app() -> FastAPI:
     async def context_recipient(request: Request, csrf: str = Form(...),
                                 email: str = Form(...), text: str = Form(""),
                                 delete: str = Form("")):
-        username = security.require_admin(request)
+        username = security.require_user(request)
         security.check_csrf(username, csrf)
         email_norm = email.strip().lower()
+        if not _is_admin(username):
+            owned = {users_store.normalize_address(a) for a in _owned_addresses(username)}
+            if users_store.normalize_address(email_norm) not in owned:
+                raise HTTPException(status_code=403, detail="not one of your addresses")
         per = SETTINGS.get("context.per_recipient", {}) or {}
         if delete == "on":
             per.pop(email_norm, None)
@@ -394,7 +445,7 @@ def create_app() -> FastAPI:
     # --------------------------------------------------------- settings: tools
     @app.get("/settings/tools", response_class=HTMLResponse)
     async def tools_page(request: Request):
-        username = security.require_user(request)
+        username = security.require_admin(request)
         cfg = SETTINGS.all()
         return render(request, "tools.html", username, cfg=cfg, tools=redact(cfg["tools"]))
 
@@ -444,7 +495,7 @@ def create_app() -> FastAPI:
     # ----------------------------------------------------- settings: overrides
     @app.get("/settings/overrides", response_class=HTMLResponse)
     async def overrides_page(request: Request):
-        username = security.require_user(request)
+        username = security.require_admin(request)
         return render(request, "overrides.html", username, cfg=SETTINGS.all())
 
     @app.post("/settings/overrides")
@@ -469,7 +520,7 @@ def create_app() -> FastAPI:
     # ------------------------------------------------------- settings: marking
     @app.get("/settings/marking", response_class=HTMLResponse)
     async def marking_page(request: Request):
-        username = security.require_user(request)
+        username = security.require_admin(request)
         return render(request, "marking.html", username, cfg=SETTINGS.all())
 
     @app.post("/settings/marking")
@@ -511,7 +562,7 @@ def create_app() -> FastAPI:
     # ------------------------------------------------ settings: classification
     @app.get("/settings/classification", response_class=HTMLResponse)
     async def classification_page(request: Request):
-        username = security.require_user(request)
+        username = security.require_admin(request)
         return render(request, "classification.html", username, cfg=SETTINGS.all())
 
     @app.post("/settings/classification")
@@ -554,7 +605,7 @@ def create_app() -> FastAPI:
     # -------------------------------------------------------------- test message
     @app.get("/test", response_class=HTMLResponse)
     async def test_page(request: Request):
-        username = security.require_user(request)
+        username = security.require_admin(request)
         return render(request, "test.html", username)
 
     @app.post("/api/test/message")
@@ -565,7 +616,7 @@ def create_app() -> FastAPI:
                            eml: UploadFile | None = File(None)):
         from ..pipeline.analyzer import process_test
 
-        username = security.require_user(request)
+        username = security.require_admin(request)
         security.check_csrf(username, csrf)
 
         if eml is not None and eml.filename:
@@ -637,24 +688,177 @@ def create_app() -> FastAPI:
         username = security.require_admin(request)
         return render(request, "blocks.html", username, suggestions=read_suggestions())
 
+    # ------------------------------------------------------------- quarantine
+    def _load_entry_for_action(request: Request, day: str, entry_id: str):
+        """Shared guard for preview/release/delete: auth, id validation, and
+        the per-user visibility check. Returns (username, entry_meta)."""
+        username = security.require_user(request)
+        if not _DAY_RE.match(day) or not _TRACE_ID_RE.match(entry_id):
+            raise HTTPException(status_code=400, detail="bad id")
+        entry = quarantine.get_meta(entry_id, day)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="not in quarantine")
+        if not _can_see_entry(username, entry):
+            raise HTTPException(status_code=403, detail="not your message")
+        return username, entry
+
+    @app.get("/quarantine", response_class=HTMLResponse)
+    async def quarantine_page(request: Request, q: str = "", day: str = "", show: str = ""):
+        username = security.require_user(request)
+        is_admin = _is_admin(username)
+        show_all = is_admin and show == "all"
+        entries = quarantine.list_entries(
+            limit=1000, day=day or None, include_tombstones=show_all
+        )
+        if not is_admin:
+            entries = [e for e in entries if _can_see_entry(username, e)]
+        if q:
+            needle = q.lower()
+            entries = [
+                e for e in entries
+                if needle in (e.get("subject", "") + " " + e.get("from_header", "")
+                              + " " + e.get("envelope_from", "")
+                              + " " + " ".join(e.get("rcpt_tos", []))).lower()
+            ]
+        cfg = SETTINGS.all()
+        return render(request, "quarantine.html", username,
+                      entries=entries, q=q, day=day, show_all=show_all,
+                      quarantine_cfg=cfg["quarantine"])
+
+    @app.get("/quarantine/{day}/{entry_id}/preview", response_class=HTMLResponse)
+    async def quarantine_preview(request: Request, day: str, entry_id: str):
+        _load_entry_for_action(request, day, entry_id)
+        raw = quarantine.get_original(entry_id, day)
+        if raw is None:
+            raise HTTPException(status_code=404, detail="message body no longer available")
+        # Its own locked-down policy (middleware uses setdefault, so these win):
+        # no script, no network, safe to render attacker HTML in a sandboxed,
+        # same-origin iframe.
+        return HTMLResponse(
+            sanitize.preview_document(raw),
+            headers={
+                "Content-Security-Policy": (
+                    "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:"
+                ),
+                "X-Frame-Options": "SAMEORIGIN",
+                "Referrer-Policy": "no-referrer",
+            },
+        )
+
+    @app.post("/quarantine/release")
+    async def quarantine_release(request: Request, csrf: str = Form(...),
+                                 entry_id: str = Form(...), day: str = Form(...),
+                                 whitelist_sender: str = Form("")):
+        username, entry = _load_entry_for_action(request, day, entry_id)
+        security.check_csrf(username, csrf)
+        raw = quarantine.get_original(entry_id, day)
+        if raw is None:
+            raise HTTPException(status_code=404, detail="message body no longer available")
+
+        rcpts = entry.get("rcpt_tos") or []
+        if not rcpts:
+            raise HTTPException(status_code=400, detail="no recipients recorded for this message")
+        mail_from = entry.get("envelope_from") or ""
+        released_note = " ".join(
+            f"by {username}; original-verdict={entry.get('ai_verdict', '')}; "
+            f"reason={entry.get('drop_reason', '')}".split()
+        )[:900]
+        stamped = hdr.prepend_headers(raw, [("X-SpamAllam-Released", released_note)])
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                None, reinject, mail_from, list(rcpts), stamped
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"re-injection failed: {exc}")
+
+        quarantine.mark(entry_id, day, quarantine.STATUS_RELEASED, username)
+
+        wl_added = ""
+        if whitelist_sender == "on":
+            from ..pipeline.overrides import _domain_of
+            dom = _domain_of(mail_from) or _domain_of(entry.get("from_header", ""))
+            if dom:
+                current = SETTINGS.get("overrides.whitelist_domains", []) or []
+                merged = sorted({*(d.lower().strip() for d in current), dom})
+                if merged != sorted(current):
+                    changes = SETTINGS.update({"overrides.whitelist_domains": merged})
+                    audit.record_changes(username, changes)
+                wl_added = dom
+
+        audit.record(username, "quarantine.release", {
+            "id": entry_id, "day": day, "envelope_from": mail_from,
+            "rcpt_tos": rcpts, "whitelisted_domain": wl_added,
+        })
+        msg = "Message released for delivery."
+        if wl_added:
+            msg += f" Whitelisted {wl_added}."
+        return RedirectResponse(_flash_url("/quarantine", "saved", msg), status_code=303)
+
+    @app.post("/quarantine/delete")
+    async def quarantine_delete(request: Request, csrf: str = Form(...),
+                                entry_id: str = Form(...), day: str = Form(...)):
+        username, entry = _load_entry_for_action(request, day, entry_id)
+        security.check_csrf(username, csrf)
+        quarantine.mark(entry_id, day, quarantine.STATUS_DELETED, username)
+        audit.record(username, "quarantine.delete", {
+            "id": entry_id, "day": day, "envelope_from": entry.get("envelope_from", ""),
+        })
+        return RedirectResponse(
+            _flash_url("/quarantine", "saved", "Message permanently deleted."), status_code=303)
+
+    @app.post("/settings/quarantine")
+    async def quarantine_settings_save(request: Request, csrf: str = Form(...),
+                                       enabled: str = Form("off"),
+                                       retention_days: int = Form(90)):
+        username = security.require_admin(request)
+        security.check_csrf(username, csrf)
+        changes = SETTINGS.update({
+            "quarantine.enabled": enabled == "on",
+            "quarantine.retention_days": max(1, min(3650, retention_days)),
+        })
+        audit.record_changes(username, changes)
+        return RedirectResponse(_flash_url("/quarantine", "saved", "Saved."), status_code=303)
+
     # ------------------------------------------------------------------ users
     @app.get("/users", response_class=HTMLResponse)
     async def users_page(request: Request, invite_token: str = ""):
         username = security.require_user(request)
+        all_users = users_store.all_users()
+        # A non-admin only manages their own account here (passkeys) — no roster.
+        users = all_users if _is_admin(username) else {
+            k: v for k, v in all_users.items() if k == username
+        }
         return render(request, "users.html", username,
-                      users=users_store.all_users(), invite_token=invite_token,
+                      users=users, invite_token=invite_token,
                       invite_url=ENV.admin_external_url(f"/setup?token={invite_token}") if invite_token else "")
 
     @app.post("/users/invite")
     async def users_invite(request: Request, csrf: str = Form(...),
-                           new_username: str = Form(...), is_admin: str = Form("off")):
+                           new_username: str = Form(...), is_admin: str = Form("off"),
+                           addresses: str = Form("")):
         username = security.require_admin(request)
         security.check_csrf(username, csrf)
-        token = users_store.create_token(new_username.strip().lower() or None, is_admin == "on")
+        addr_list = [a.strip() for a in addresses.splitlines() if a.strip()]
+        token = users_store.create_token(
+            new_username.strip().lower() or None, is_admin == "on", addr_list)
         audit.record(username, "user.invite",
-                     {"username": new_username, "is_admin": is_admin == "on"})
+                     {"username": new_username, "is_admin": is_admin == "on",
+                      "addresses": users_store.normalize_addresses(addr_list)})
         url = _flash_url(f"/users?invite_token={token}", "saved", "Invite link created.")
         return RedirectResponse(url, status_code=303)
+
+    @app.post("/users/addresses")
+    async def users_addresses(request: Request, csrf: str = Form(...),
+                              target: str = Form(...), addresses: str = Form("")):
+        username = security.require_admin(request)
+        security.check_csrf(username, csrf)
+        if users_store.get_user(target) is None:
+            raise HTTPException(status_code=404, detail="no such user")
+        addr_list = [a.strip() for a in addresses.splitlines() if a.strip()]
+        users_store.set_addresses(target, addr_list)
+        audit.record(username, "user.addresses",
+                     {"username": target, "addresses": users_store.normalize_addresses(addr_list)})
+        return RedirectResponse(_flash_url("/users", "saved", "Addresses updated."), status_code=303)
 
     @app.post("/users/delete")
     async def users_delete(request: Request, csrf: str = Form(...), target: str = Form(...)):

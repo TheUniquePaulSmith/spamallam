@@ -123,7 +123,10 @@ class Pipeline:
         if ai_drop or rspamd_drop:
             why = "ai high-confidence threat" if ai_drop else f"rspamd reject (score {rres.score:.1f})"
             raw_saved = self._save_raw_copy(tagged, trace)
-            trace.finish(DROP, self._verdict_dict(verdict, rres, why, raw_saved))
+            quarantined = self._save_quarantine(
+                cleaned, trace, cfg, verdict, rres, why, envelope_from, rcpt_tos, client, msg_headers,
+            )
+            trace.finish(DROP, self._verdict_dict(verdict, rres, why, raw_saved, quarantined))
             return Decision(DROP, reason=why), trace
 
         # 6b. SPAM warning banner / plaintext->HTML / image breaking / classification
@@ -274,8 +277,49 @@ class Pipeline:
             return False
 
     @staticmethod
+    def _save_quarantine(cleaned: bytes, trace: Any, cfg: dict[str, Any],
+                         verdict: hdr.SpamallamVerdict, rres: rspamd_client.RspamdResult,
+                         why: str, envelope_from: str, rcpt_tos: list[str],
+                         client: dict[str, Any], msg_headers: dict[str, str]) -> bool:
+        """Encrypt-at-rest a copy of a dropped message so an admin/user can
+        preview, permanently delete, or release it. Best-effort: never blocks
+        or changes the drop -- a storage failure is a trace event only.
+        Stores `cleaned` (inbound anti-spoof headers removed, our signed
+        X-SpamAllam-* headers not yet added) so a release delivers the message
+        essentially as the sender sent it."""
+        if not cfg.get("quarantine", {}).get("enabled", True):
+            return False
+        trace_id = getattr(trace, "id", None)
+        trace_day = getattr(trace, "day", None)
+        if not trace_id or not trace_day:
+            return False
+        try:
+            from ..store import quarantine
+            quarantine.save(trace_id, trace_day, {
+                "envelope_from": envelope_from,
+                "from_header": msg_headers.get("from", ""),
+                "subject": msg_headers.get("subject", ""),
+                "message_id": msg_headers.get("message_id", ""),
+                "rcpt_tos": list(rcpt_tos),
+                "client": {"addr": client.get("addr", ""), "name": client.get("name", "")},
+                "drop_reason": why,
+                "ai_verdict": verdict.verdict,
+                "ai_confidence": verdict.confidence,
+                "ai_category": verdict.category,
+                "ai_reason": verdict.reason,
+                "model": verdict.model,
+                "rspamd_action": rres.action if rres.ok else f"error: {rres.error}",
+                "rspamd_score": rres.score,
+            }, cleaned)
+            return True
+        except Exception as exc:  # noqa: BLE001 -- review aid, must not affect delivery
+            trace.event("quarantine_save_error", error=f"{type(exc).__name__}: {exc}")
+            return False
+
+    @staticmethod
     def _verdict_dict(verdict: hdr.SpamallamVerdict, rres: rspamd_client.RspamdResult,
-                      drop_reason: str, raw_saved: bool = False) -> dict[str, Any]:
+                      drop_reason: str, raw_saved: bool = False,
+                      quarantined: bool = False) -> dict[str, Any]:
         return {
             "ai_verdict": verdict.verdict,
             "ai_confidence": verdict.confidence,
@@ -289,6 +333,7 @@ class Pipeline:
             "rspamd_score": rres.score,
             "drop_reason": drop_reason,
             "raw_saved": raw_saved,
+            "quarantined": quarantined,
         }
 
 

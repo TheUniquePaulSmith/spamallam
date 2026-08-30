@@ -56,6 +56,13 @@ delivered carrying verdict headers (`X-Spam-Flag`, `X-Spam-Status`,
   full technical message traces, and an append-only admin audit log. All state
   is file-based YAML/JSONL under one volume; secrets are AES-256-GCM encrypted
   at rest.
+- **Quarantine** — every dropped message is held (encrypted at rest, auto-expiry
+  after a configurable retention, default 90 days) for review: filter, preview
+  the rendered HTML with remote images/tracking pixels stripped, permanently
+  delete, or **release** it for delivery (optionally whitelisting the sender).
+  An admin can scope non-admin users to specific e-mail addresses so they only
+  see and release their own quarantined mail. See
+  [docs/QUARANTINE.md](docs/QUARANTINE.md).
 - **acme.sh certificate container** — DNS-01 issuance/renewal into a shared
   volume it alone can write; postfix and spamallam hot-reload on rotation.
 
@@ -102,7 +109,7 @@ postfix/               hardened inbound-only relay (config rendered from env)
 rspamd/                local.d baseline + spamallam Lua plugin
 spamallam/             Python service: SMTP filter, AI engine, tools, admin UI, tests
 acme/                  acme.sh issuance/renewal container
-docs/                  SYNOLOGY.md · UNIFI.md · SECURITY.md
+docs/                  SYNOLOGY.md · UNIFI.md · SECURITY.md · QUARANTINE.md
 ```
 
 ## Security model
