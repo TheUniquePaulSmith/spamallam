@@ -9,7 +9,7 @@ review.</p>
   <tr><th>time</th><th>ip</th><th>cidr</th><th>rDNS</th><th>status</th><th>reason</th></tr>
   {% for s in suggestions %}
   <tr>
-    <td class="mono">{{ s.ts }}</td>
+    <td class="mono">{{ fmt_dt(s.ts) }}</td>
     <td class="mono">{{ s.ip }}</td>
     <td class="mono">{{ s.cidr }}</td>
     <td>{{ s.reverse_dns or '—' }}</td>
