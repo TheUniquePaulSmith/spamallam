@@ -24,7 +24,7 @@
 {% for e in entries %}
 <details class="card trace" data-id="{{ e.id }}">
   <summary class="trace-row">
-    <span class="mono muted trace-col-time">{{ e.ts }}</span>
+    <span class="mono muted trace-col-time">{{ fmt_dt(e.ts) }}</span>
     <span class="trace-col-subject" title="{{ e.subject }}">{{ e.subject or '(no subject)' }}</span>
     <span class="mono trace-col-from" title="{{ e.from_header or e.envelope_from }}">{{ e.from_header or e.envelope_from or '<>' }}</span>
     <span class="mono muted trace-col-mx" title="{{ e.rcpt_tos|join(', ') }}">{{ e.rcpt_tos|join(', ') or '-' }}</span>
@@ -48,7 +48,7 @@
         <p><strong>rspamd:</strong> {{ e.rspamd_action }} ({{ '%.1f'|format(e.rspamd_score or 0) }})</p>
         <p><strong>Drop reason:</strong> {{ e.drop_reason }}</p>
         {% if e.status != 'quarantined' %}
-        <p><strong>{{ e.status|capitalize }} by:</strong> {{ e.acted_by }} at {{ e.acted_ts }}</p>
+        <p><strong>{{ e.status|capitalize }} by:</strong> {{ e.acted_by }} at {{ fmt_dt(e.acted_ts) }}</p>
         {% endif %}
       </div>
     </div>

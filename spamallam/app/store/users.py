@@ -130,6 +130,7 @@ def create_user(username: str, display: str, is_admin: bool,
         "display": display or username,
         "is_admin": bool(is_admin),
         "created": _now(),
+        "timezone": "UTC",
         "credentials": [],
         # E-mail addresses (primary + aliases) this user owns. An admin assigns
         # these; a non-admin sees only quarantined mail addressed to one of them.
@@ -144,6 +145,21 @@ def set_addresses(username: str, addresses: list[str]) -> bool:
     if user is None:
         return False
     user["addresses"] = normalize_addresses(addresses)
+    save_user(username, user)
+    return True
+
+
+def get_timezone(username: str) -> str:
+    """The user's friendly-date time-zone preference (IANA name); 'UTC' default."""
+    user = get_user(username) or {}
+    return user.get("timezone") or "UTC"
+
+
+def set_timezone(username: str, tz_name: str) -> bool:
+    user = get_user(username)
+    if user is None:
+        return False
+    user["timezone"] = tz_name
     save_user(username, user)
     return True
 

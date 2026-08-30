@@ -12,7 +12,7 @@
 {% set msg = t.message or {} %}
 <details class="card trace">
   <summary class="trace-row">
-    <span class="mono muted trace-col-time">{{ t.ts }}</span>
+    <span class="mono muted trace-col-time">{{ fmt_dt(t.ts) }}</span>
     <span class="trace-col-subject" title="{{ msg.subject }}">{{ msg.subject or '(no subject)' }}</span>
     <span class="mono trace-col-from" title="{{ msg.from or t.envelope_from }}">{{ msg.from or t.envelope_from or '<>' }}</span>
     <span class="mono muted trace-col-mx" title="{{ t.client.addr }}">{{ t.client.name or t.client.addr or '-' }}</span>
