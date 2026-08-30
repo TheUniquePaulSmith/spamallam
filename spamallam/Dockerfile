@@ -1,5 +1,10 @@
 FROM python:3.12-slim
 
+# Release identifier shown in the admin UI footer. Pass the git tag / short
+# hash at build time; docker-compose wires this from ${SPAMALLAM_VERSION}.
+# Left unset, app/version.py falls back to the packaged pyproject version.
+ARG SPAMALLAM_VERSION=""
+
 # curl is used by the web_fetch tool's default backend
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
@@ -18,6 +23,7 @@ ENV PYTHONUNBUFFERED=1 \
     SPAMALLAM_DATA=/data \
     SPAMALLAM_TEMPLATES=/opt/spamallam/templates \
     SPAMALLAM_STATIC=/opt/spamallam/static \
+    SPAMALLAM_VERSION=${SPAMALLAM_VERSION} \
     TMPDIR=/run/spamallam
 
 EXPOSE 10026 8443

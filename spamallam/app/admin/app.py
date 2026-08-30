@@ -20,6 +20,7 @@ from ..store import users as users_store
 from ..store.secrets import SecretsBox, redact
 from ..store.settings import SETTINGS
 from ..tools.unifi import read_suggestions
+from ..version import get_version
 from . import security, webauthn_flow
 
 log = logging.getLogger("spamallam.admin")
@@ -65,6 +66,7 @@ def render(request: Request, name: str, username: str | None = None, **ctx: Any)
         "username": username,
         "is_admin": bool(user and user.get("is_admin")),
         "csrf": security.csrf_token(username) if username else "",
+        "version": get_version(),
         **ctx,
     })
 

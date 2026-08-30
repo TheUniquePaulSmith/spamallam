@@ -115,7 +115,27 @@ def test_system_prompt_default_and_override():
     assert system_prompt({"system_prompt": "custom rules"}) == "custom rules"
 
 
-def test_default_system_prompt_covers_core_doctrine():
+def test_get_version_prefers_build_env(monkeypatch):
+    from app import version
+
+    version.get_version.cache_clear()
+    monkeypatch.setenv("SPAMALLAM_VERSION", "v9.9.9")
+    try:
+        assert version.get_version() == "v9.9.9"
+    finally:
+        version.get_version.cache_clear()
+
+
+def test_get_version_falls_back_without_build_env(monkeypatch):
+    from app import version
+
+    version.get_version.cache_clear()
+    monkeypatch.delenv("SPAMALLAM_VERSION", raising=False)
+    try:
+        # git short hash (checkout), else "v<pyproject version>", never empty
+        assert version.get_version()
+    finally:
+        version.get_version.cache_clear()
     from app.ai.prompt import DEFAULT_SYSTEM_PROMPT as p
 
     # verdicts + output contract (verdict is submitted via the submit_verdict

@@ -228,9 +228,13 @@ before going live, since sending servers see the cert on STARTTLS).
 
 ```bash
 git pull
-docker compose build --pull
+SPAMALLAM_VERSION="$(git describe --tags --always --dirty)" docker compose build --pull
 docker compose up -d
 ```
+
+`SPAMALLAM_VERSION` stamps the git tag (or short commit hash) into the image;
+it shows in the admin UI footer. Omit it and the footer falls back to the
+packaged version from `pyproject.toml`.
 
 State (config, users, logs, bayes data, certs) lives in named volumes and
 survives rebuilds. Back up the `spamallam-data` volume — with `SECRETS_KEY`
